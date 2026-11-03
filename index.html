@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>四轴机械臂 · STM32F103C8T6</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#1a1d21; --muted:#5f6673;
+    --line:#e3e6ea; --accent:#2f6fed; --accent-soft:#eaf1ff;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",system-ui,sans-serif;
+    line-height:1.7; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:860px; margin:0 auto; padding:56px 24px 72px}
+  header{border-bottom:1px solid var(--line); padding-bottom:28px; margin-bottom:36px}
+  h1{font-size:30px; margin:0 0 10px; letter-spacing:-.4px; font-weight:650}
+  .sub{color:var(--muted); font-size:15px; margin:0}
+  .tag{
+    display:inline-block; font-size:12px; color:var(--accent);
+    background:var(--accent-soft); border-radius:999px; padding:2px 10px;
+    margin-bottom:14px; font-weight:600; letter-spacing:.2px;
+  }
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin:0 0 36px}
+  .card{background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px}
+  .card .k{font-size:12px; color:var(--muted); margin-bottom:4px}
+  .card .v{font-size:19px; font-weight:650; letter-spacing:-.3px}
+  .card .v small{font-size:12px; font-weight:400; color:var(--muted); margin-left:2px}
+  h2{font-size:15px; text-transform:none; letter-spacing:.3px; color:var(--muted);
+     font-weight:600; margin:36px 0 14px}
+  .actions{display:flex; flex-wrap:wrap; gap:12px; margin:20px 0 8px}
+  a.btn{
+    display:inline-flex; align-items:center; gap:8px; text-decoration:none;
+    padding:11px 20px; border-radius:10px; font-size:14.5px; font-weight:600;
+    border:1px solid var(--line); color:var(--ink); background:var(--card);
+    transition:.16s ease;
+  }
+  a.btn:hover{border-color:#c9ced6; transform:translateY(-1px)}
+  a.btn.primary{background:var(--accent); border-color:var(--accent); color:#fff}
+  a.btn.primary:hover{background:#2560d4; border-color:#2560d4}
+  .note{
+    background:var(--card); border:1px solid var(--line); border-left:3px solid #f0b429;
+    border-radius:8px; padding:14px 18px; font-size:14px; color:var(--muted); margin:22px 0 0;
+  }
+  .note b{color:var(--ink)}
+  ul.docs{list-style:none; padding:0; margin:0}
+  ul.docs li{margin:0 0 2px}
+  ul.docs a{
+    display:flex; justify-content:space-between; align-items:baseline; gap:16px;
+    padding:11px 4px; border-bottom:1px solid var(--line);
+    color:var(--ink); text-decoration:none; font-size:14.5px;
+  }
+  ul.docs a:hover{color:var(--accent)}
+  ul.docs .d{color:var(--muted); font-size:12.5px; white-space:nowrap}
+  footer{margin-top:48px; padding-top:20px; border-top:1px solid var(--line);
+         color:var(--muted); font-size:12.5px}
+  code{
+    background:#eef0f3; padding:1.5px 6px; border-radius:5px;
+    font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:.9em;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <span class="tag">STM32F103C8T6 · 裸机 · 无 RTOS</span>
+    <h1>四轴机械臂</h1>
+    <p class="sub">
+      三连杆逆运动学 · 笛卡尔直线插补（梯形加减速）· 串口文本协议 ·
+      关节空间示教回放 · 单文件网页上位机
+    </p>
+  </header>
+
+  <div class="cards">
+    <div class="card"><div class="k">自由度</div><div class="v">4 <small>+ 夹爪 2</small></div></div>
+    <div class="card"><div class="k">IK → FK 误差</div><div class="v">0.0000 <small>mm</small></div></div>
+    <div class="card"><div class="k">工作空间可达率</div><div class="v">66.3<small>%</small></div></div>
+    <div class="card"><div class="k">Flash 占用</div><div class="v">76<small>%</small></div></div>
+  </div>
+
+  <h2>在线体验</h2>
+  <div class="actions">
+    <a class="btn primary" href="tools/serial_console.html">▸ 打开网页上位机</a>
+    <a class="btn" href="https://github.com/chenguangzhai/robotic-arm">查看源码</a>
+  </div>
+
+  <p class="note">
+    <b>上位机需要真实硬件才能连上。</b>它通过浏览器 Web Serial 直连串口，
+    请用 <b>Chrome / Edge</b>（Firefox、Safari 不支持），并把 USB-TTL 接上机械臂。
+    <br>没有硬件也能打开看界面、拖拽 3D 姿态视图、浏览工作空间底图。
+  </p>
+
+  <h2>文档</h2>
+  <ul class="docs">
+    <li>
+      <a href="https://github.com/chenguangzhai/robotic-arm/blob/main/docs/开发总结.md">
+        <span>开发总结（结论版）</span>
+        <span class="d">326 行 · 是什么 / 为什么 / 参数多少</span>
+      </a>
+    </li>
+    <li>
+      <a href="https://github.com/chenguangzhai/robotic-arm/blob/main/docs/工程开发总结.md">
+        <span>工程开发总结（详细记录）</span>
+        <span class="d">1128 行 · 推导、验证与 14 条踩坑</span>
+      </a>
+    </li>
+    <li>
+      <a href="https://github.com/chenguangzhai/robotic-arm#readme">
+        <span>README</span>
+        <span class="d">引脚表 · 构建烧录 · 协议速查</span>
+      </a>
+    </li>
+  </ul>
+
+  <h2>看什么</h2>
+  <p class="sub" style="font-size:14.5px">
+    中栏的姿态视图把固件里的运动学在浏览器里<b>重新实现了一遍</b>，而且由串口回报的
+    <b>实际安装角</b>驱动，不是用目标坐标反算——所以图上末端与目标红十字的距离，
+    就是真实的逆解误差。右侧日志会显示每一条下发的字节。
+    <br><br>
+    想理解设计取舍（为什么示教记关节角不记坐标、为什么减速上限用
+    <code>sqrt(2ad)</code>），直接看结论版的第 3 节。
+  </p>
+
+  <footer>
+    chenguangzhai · STM32F103C8T6 · 源码与文档见
+    <a href="https://github.com/chenguangzhai/robotic-arm" style="color:var(--accent);text-decoration:none">GitHub</a>
+  </footer>
+
+</div>
+</body>
+</html>
