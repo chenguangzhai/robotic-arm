@@ -1,0 +1,1236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>机械臂串口控制台</title>
+<style>
+  :root{
+    --bg:#eef1f5; --panel:#ffffff; --line:#e2e6ec; --text:#1b2027; --muted:#6b7480;
+    --accent:#2563eb; --accent-hover:#1d4fd8; --accent-soft:#e8efff;
+    --ok:#15803d; --ok-soft:#e7f6ec;
+    --err:#c81e1e; --err-soft:#fdecec;
+    --warn:#b45309; --warn-soft:#fdf3e3;
+    --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+
+  /* ---------- 顶栏 ---------- */
+  header{
+    display:flex; align-items:center; gap:14px;
+    padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line);
+    flex:0 0 auto;
+  }
+  .brand{display:flex; align-items:baseline; gap:10px; margin-right:auto}
+  .brand h1{font-size:15px; margin:0; font-weight:650; letter-spacing:.2px}
+  .brand span{font-size:12px; color:var(--muted)}
+
+  .conn{display:flex; align-items:center; gap:8px}
+  .conn select{width:auto; min-width:104px}
+  .dot{width:8px; height:8px; border-radius:50%; background:#c2c8d0; flex:0 0 auto}
+  .dot.on{background:var(--ok); box-shadow:0 0 0 3px var(--ok-soft)}
+  .conn-state{font-size:12.5px; color:var(--muted); min-width:96px}
+
+  /* ---------- 布局 ---------- */
+  main{
+    flex:1; min-height:0; display:grid;
+    grid-template-columns:340px minmax(300px,1fr) minmax(0,1.05fr);
+    gap:14px; padding:14px;
+  }
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    display:flex; flex-direction:column; min-height:0;
+    box-shadow:0 1px 2px rgba(16,24,40,.04);
+  }
+  .panel-head{
+    padding:11px 14px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; justify-content:space-between; gap:8px; flex:0 0 auto;
+  }
+  .panel-head h2{font-size:13px; margin:0; font-weight:650; letter-spacing:.3px}
+  .panel-body{padding:11px 12px; overflow:auto; min-height:0}
+
+  /* ---------- 表单 ---------- */
+  .field-row{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
+  .field label{display:block; font-size:11.5px; color:var(--muted); margin-bottom:4px}
+  input[type=number], input[type=text], select{
+    width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:8px;
+    background:#fff; color:var(--text); font-family:var(--mono); font-size:13px; outline:none;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  input:focus, select:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  input:disabled, select:disabled{background:#f7f9fc; color:#a4acb6}
+
+  button{
+    cursor:pointer; border:1px solid var(--line); background:#fff; color:var(--text);
+    padding:7px 12px; border-radius:8px; font-size:13px; font-family:inherit;
+    transition:background .15s, border-color .15s, opacity .15s;
+  }
+  button:hover{background:#f6f8fb}
+  button:disabled{opacity:.42; cursor:not-allowed}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600}
+  button.primary:hover:not(:disabled){background:var(--accent-hover)}
+  button.wide{width:100%; padding:8px; margin-top:8px; font-size:13px}
+
+  /* ---------- 夹爪按钮 ---------- */
+  /* 加大一号，并按「当前实际状态」高亮：高亮的那个就是夹爪现在的位置。
+   * 夹爪没有位置反馈，只能靠 ? 回报的舵机角推断，所以这个高亮
+   * 代表的是「固件认为它在哪」，不是「真的夹住了」。 */
+  button.grip{
+    width:100%; padding:8px 8px; font-size:13px; font-weight:600;
+    display:flex; align-items:center; justify-content:center; gap:6px;
+  }
+  button.grip.active{
+    background:var(--accent-soft); border-color:var(--accent); color:var(--accent);
+    font-weight:700; box-shadow:0 0 0 3px rgba(37,99,235,.12);
+  }
+  button.grip.active:hover{background:var(--accent-soft)}
+  /* 夹爪示意图标：两道竖线，收紧时向内靠 */
+  .grip-glyph{
+    display:inline-block; width:16px; height:12px; position:relative; flex:0 0 auto;
+  }
+  .grip-glyph::before, .grip-glyph::after{
+    content:""; position:absolute; top:0; bottom:0; width:3px; border-radius:1px;
+    background:currentColor; transition:left .18s, right .18s;
+  }
+  .grip-glyph::before{left:1px}
+  .grip-glyph::after{right:1px}
+  button.grip.active .grip-glyph::before{left:4px}
+  button.grip.active .grip-glyph::after{right:4px}
+  /* 档位角标：按钮上直接标出发给固件的角度，
+   * 免得「平行/垂直到底是几度」还要回头翻文档 */
+  button.grip .deg{
+    font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size:11px; font-weight:600; opacity:.68; flex:0 0 auto;
+  }
+  button.grip.active .deg{opacity:.9}
+
+  .hint{font-size:11.5px; color:var(--muted); margin-top:4px}
+  .section-label{
+    font-size:10.5px; font-weight:650; color:var(--muted); letter-spacing:.6px;
+    text-transform:uppercase; margin:9px 0 5px;
+  }
+  .section-label:first-child{margin-top:0}
+
+  /* ---------- 状态卡 ---------- */
+  .pill{
+    display:inline-flex; align-items:center; gap:6px; padding:3px 10px;
+    border-radius:999px; font-size:12px; font-weight:650;
+  }
+  .pill.idle{background:#eef1f5; color:var(--muted)}
+  .pill.ok{background:var(--ok-soft); color:var(--ok)}
+  .pill.err{background:var(--err-soft); color:var(--err)}
+  .pill.wait{background:var(--warn-soft); color:var(--warn)}
+
+  /* 3 列：目标坐标占满一行，然后 B/S/E 一行、W/G/R 一行，比 2 列少一行 */
+  .status-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:6px}
+  .stat{background:#f7f9fc; border:1px solid var(--line); border-radius:8px; padding:5px 8px}
+  .stat .k{font-size:10.5px; color:var(--muted); white-space:nowrap}
+  .stat .v{font-family:var(--mono); font-size:13.5px; font-weight:650; margin-top:0}
+  .stat.wide{grid-column:span 3}
+
+  /* ---------- 机械臂视图 ---------- */
+  .view-wrap{position:relative; flex:1; min-height:0; padding:4px}
+  #armCanvas{width:100%; height:100%; display:block; border-radius:9px}
+  .top-wrap{position:absolute; top:10px; right:10px; width:96px; text-align:center}
+  .top-wrap canvas{
+    width:96px; height:96px; display:block;
+    background:rgba(255,255,255,.88); border:1px solid var(--line); border-radius:9px;
+  }
+  .top-wrap span{font-size:10.5px; color:var(--muted)}
+  .view-foot{
+    display:flex; gap:16px; flex-wrap:wrap; align-items:baseline;
+    padding:9px 14px; border-top:1px solid var(--line); font-size:12px; color:var(--muted);
+    flex:0 0 auto;
+  }
+  .view-foot b{color:var(--text); font-family:var(--mono); font-weight:650; font-size:12.5px}
+
+  /* ---------- 日志 ---------- */
+  #log{
+    flex:1; min-height:0; overflow:auto; padding:9px 12px;
+    font-family:var(--mono); font-size:12.5px; line-height:1.62; background:#fbfcfe;
+  }
+  .log-row{display:flex; gap:7px; white-space:pre-wrap; word-break:break-all; padding:1px 0}
+  .log-row .t{color:#9aa3ae; flex:0 0 auto; font-size:11.5px; padding-top:1px}
+  .log-row .d{flex:0 0 auto; font-weight:700; width:20px; font-size:11px; padding-top:1px}
+  .log-row.rx .d{color:var(--ok)}
+  .log-row.tx .d{color:var(--accent)}
+  .log-row.sys{color:var(--muted); font-style:italic}
+  .log-row.err{color:var(--err)}
+  .log-row.err .d{color:var(--err)}
+
+  .send-bar{
+    display:flex; gap:8px; padding:10px 12px; border-top:1px solid var(--line);
+    align-items:center; flex:0 0 auto; background:var(--panel);
+    border-radius:0 0 12px 12px;
+  }
+  .send-bar input[type=text]{flex:1}
+  .toolbar{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+  .chk{display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--muted); cursor:pointer; user-select:none}
+  .chk input{accent-color:var(--accent); margin:0}
+
+  .banner{
+    display:none; margin:0 14px; margin-top:14px; padding:10px 14px;
+    background:var(--err-soft); border:1px solid #f3c9c9; border-radius:10px;
+    color:var(--err); font-size:13px;
+  }
+  .banner.show{display:block}
+
+  @media (max-width: 1180px){
+    main{grid-template-columns:340px minmax(0,1fr); grid-template-rows:minmax(240px,1.15fr) minmax(200px,1fr)}
+    .panel-log{grid-column:1 / -1}
+  }
+  @media (max-width: 820px){
+    main{grid-template-columns:1fr; grid-template-rows:auto minmax(240px,1fr) minmax(200px,1fr)}
+    .panel-log{grid-column:auto}
+  }
+
+  /* 矮屏（笔记本 1366×768 这类）：左栏整体再压一档，
+   * 目标是「不用滚动就能看到运动控制面板的全部内容」。
+   * 只调间距和字号，不动结构，大屏不受影响。 */
+  @media (max-height: 820px){
+    .panel-body{padding:8px 10px}
+    .section-label{margin:6px 0 4px; font-size:10px}
+    .field label{font-size:11px; margin-bottom:2px}
+    input[type=number], input[type=text], select{padding:5px 8px; font-size:12.5px}
+    button.grip{padding:6px 6px; font-size:12.5px}
+    button.wide{margin-top:6px; padding:7px; font-size:12.5px}
+    .stat{padding:3px 6px}
+    .stat .k{font-size:10px}
+    .stat .v{font-size:12.5px}
+    .hint{font-size:11px; margin-top:3px}
+    .status-grid{gap:4px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>机械臂串口控制台</h1>
+    <span>USART1 · 115200 8N1</span>
+  </div>
+
+  <div class="conn">
+    <select id="baud" title="波特率">
+      <option>9600</option>
+      <option>19200</option>
+      <option>38400</option>
+      <option>57600</option>
+      <option selected>115200</option>
+      <option>230400</option>
+      <option>460800</option>
+      <option>921600</option>
+    </select>
+    <button id="btnConn" class="primary">连接串口</button>
+    <div class="dot" id="dot"></div>
+    <div class="conn-state" id="connState">未连接</div>
+  </div>
+</header>
+
+<div class="banner" id="banner">
+  当前浏览器不支持 Web Serial API。请用 <b>Chrome</b> 或 <b>Edge</b> 打开本文件（Firefox / Safari 不支持）。
+</div>
+
+<main>
+  <!-- ================= 左：运动控制 ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>运动控制</h2>
+      <span class="pill idle" id="resultPill">待机</span>
+    </div>
+
+    <div class="panel-body">
+      <div class="section-label">目标坐标</div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="inX">X 前方</label>
+          <input type="number" id="inX" value="0.28" step="0.005" min="0" max="1">
+        </div>
+        <div class="field">
+          <label for="inY">Y 高度</label>
+          <input type="number" id="inY" value="0.10" step="0.005" min="0" max="1">
+        </div>
+        <div class="field">
+          <label for="inZ">Z 横向</label>
+          <input type="number" id="inZ" value="0.00" step="0.005" min="-1" max="1">
+        </div>
+      </div>
+
+      <div class="field-row" style="grid-template-columns:1fr 1fr; margin-top:6px">
+        <select id="unit" title="坐标单位">
+          <option value="m" selected>米（m）</option>
+          <option value="mm">毫米（mm）</option>
+        </select>
+        <button id="btnSync" title="把当前目标读回输入框">读回目标</button>
+      </div>
+
+      <button id="btnSend" class="primary wide" disabled>发送 M 指令</button>
+      <div class="hint" id="cmdPreview" style="display:none">M 0.2800 0.1000 0.0000</div>
+
+      <div class="section-label">夹爪 / 旋转</div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr">
+        <button id="btnGripOpen" class="grip" disabled>
+          <span class="grip-glyph"></span>张开
+        </button>
+        <button id="btnGripClose" class="grip" disabled>
+          <span class="grip-glyph"></span>收紧
+        </button>
+      </div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr; margin-top:6px">
+        <button id="btnRotHoriz" class="grip" disabled title="发送 R 0">平行地面 <span class="deg">0°</span></button>
+        <button id="btnRotVert" class="grip" disabled title="发送 R 60">垂直地面 <span class="deg">60°</span></button>
+      </div>
+      <div class="field-row" style="grid-template-columns:1fr auto; margin-top:6px">
+        <input type="number" id="inRot" value="60" min="0" max="180" step="5"
+               title="自定义角度 0~180°（0 = 平行地面，60 = 垂直地面）"
+               aria-label="自定义旋转角度 0~180 度，0 度平行地面，60 度垂直地面">
+        <button id="btnRotSet" disabled>旋转</button>
+      </div>
+
+      <div class="section-label">实时状态</div>
+
+      <div class="status-grid">
+        <div class="stat wide">
+          <div class="k">目标坐标（单片机回报）</div>
+          <div class="v" id="stPos">—</div>
+        </div>
+        <div class="stat"><div class="k">底座 B</div><div class="v" id="stB">—</div></div>
+        <div class="stat"><div class="k">肩 S</div><div class="v" id="stS">—</div></div>
+        <div class="stat"><div class="k">肘 E</div><div class="v" id="stE">—</div></div>
+        <div class="stat"><div class="k">腕 W</div><div class="v" id="stW">—</div></div>
+        <div class="stat"><div class="k">夹爪 G</div><div class="v" id="stG">—</div></div>
+        <div class="stat"><div class="k">旋转 R</div><div class="v" id="stR">—</div></div>
+      </div>
+
+      <div class="toolbar" style="margin-top:10px">
+        <label class="chk"><input type="checkbox" id="pollOn" checked> 定时轮询（500ms）</label>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 中：机械臂姿态 ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>机械臂姿态</h2>
+      <div class="toolbar">
+        <label class="chk"><input type="checkbox" id="optWS" checked> 工作空间</label>
+      </div>
+    </div>
+
+    <div class="view-wrap">
+      <canvas id="armCanvas"></canvas>
+      <div class="top-wrap">
+        <canvas id="topCanvas"></canvas>
+        <span>俯视 x–z</span>
+      </div>
+    </div>
+
+    <div class="view-foot">
+      <span>末端 <b id="vTip">—</b></span>
+      <span>姿态 α <b id="vAlpha">—</b></span>
+      <span>与目标偏差 <b id="vErr">—</b></span>
+    </div>
+  </section>
+
+  <!-- ================= 右：串口控制台 ================= -->
+  <section class="panel panel-log">
+    <div class="panel-head">
+      <h2>串口日志</h2>
+      <div class="toolbar">
+        <label class="chk"><input type="checkbox" id="optTime" checked> 时间戳</label>
+        <label class="chk"><input type="checkbox" id="optHex"> HEX 显示</label>
+        <label class="chk"><input type="checkbox" id="optAuto" checked> 自动滚动</label>
+        <label class="chk"><input type="checkbox" id="optShowS"> 显示 S 行</label>
+        <button id="btnClear">清空</button>
+      </div>
+    </div>
+
+    <div id="log"></div>
+
+    <div class="send-bar">
+      <input type="text" id="manual" placeholder="手动发送，回车即发（支持 M 0.3 0.1 0 / ? 等）" disabled>
+      <label class="chk"><input type="checkbox" id="optCRLF" checked> 追加 \r\n</label>
+      <label class="chk"><input type="checkbox" id="optHexSend"> HEX</label>
+      <button id="btnManual" class="primary" disabled>发送</button>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ============ 元素 ============ */
+  const $ = (id) => document.getElementById(id);
+  const elBaud = $("baud"), elBtnConn = $("btnConn"), elDot = $("dot"), elConnState = $("connState");
+  const elX = $("inX"), elY = $("inY"), elZ = $("inZ"), elUnit = $("unit");
+  const elBtnSend = $("btnSend"), elBtnSync = $("btnSync"), elPreview = $("cmdPreview");
+  const elBtnGripOpen = $("btnGripOpen"), elBtnGripClose = $("btnGripClose");
+  const elBtnRotHoriz = $("btnRotHoriz"), elBtnRotVert = $("btnRotVert");
+  const elBtnRotSet = $("btnRotSet"), elInRot = $("inRot");
+  const elPill = $("resultPill");
+  const elStPos = $("stPos"), elStB = $("stB"), elStS = $("stS"), elStE = $("stE"), elStW = $("stW");
+  const elStG = $("stG"), elStR = $("stR");
+  const elPollOn = $("pollOn");
+  const elLog = $("log"), elManual = $("manual"), elBtnManual = $("btnManual");
+  const elOptTime = $("optTime"), elOptHex = $("optHex"), elOptAuto = $("optAuto"), elOptShowS = $("optShowS");
+  const elOptCRLF = $("optCRLF"), elOptHexSend = $("optHexSend");
+  const elBtnClear = $("btnClear"), elBanner = $("banner");
+  const elOptWS = $("optWS"), elArmCanvas = $("armCanvas"), elTopCanvas = $("topCanvas");
+  const elVTip = $("vTip"), elVAlpha = $("vAlpha"), elVErr = $("vErr");
+
+  /* ============ 标定常量（改标定只动这里） ============ */
+  /* 夹爪旋转（PA6）实测标定：
+   *   0°  = 夹爪平行于地面（上电初始姿态）
+   *   60° = 夹爪垂直于地面   ← 实测值，不是几何推论的 90°
+   * 中间角度按线性过渡理解。若以后重新标定，改这两个数即可，
+   * 判定容差 ROT_TOL 会自动跟着走。 */
+  const ROT_HORIZ_DEG = 0;
+  const ROT_VERT_DEG = 60;
+  const ROT_TOL = 6;              /* ±6° 以内算「到位到该档」，用于高亮和文字标注 */
+
+  /* ============ 状态 ============ */
+  let port = null, reader = null, writer = null, connected = false;
+  let readLoopPromise = null;     /* 关串口前必须等它退干净，否则 close() 会报端口仍被锁 */
+  let rxBuf = "";                 /* 未凑满一行的残留文本 */
+  let pollTimer = null;
+  let writeChain = Promise.resolve();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const encoder = new TextEncoder();
+  const history = [];             /* 手动发送历史 */
+  let histIdx = -1;
+  let lastTarget = null;          /* 单片机回报的目标 {x,y,z} 单位米 */
+  let errLock = false;            /* 报错后锁住状态灯，别被下一次轮询冲掉 */
+
+  /* ============ 日志 ============ */
+  function stamp() {
+    const d = new Date();
+    const p = (n, w = 2) => String(n).padStart(w, "0");
+    return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()) + "." + p(d.getMilliseconds(), 3);
+  }
+
+  function appendRow(kind, text) {
+    const row = document.createElement("div");
+    row.className = "log-row " + kind;
+
+    if (elOptTime.checked) {
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent = stamp();
+      row.appendChild(t);
+    }
+
+    if (kind === "rx" || kind === "tx" || kind === "err") {
+      const d = document.createElement("span");
+      d.className = "d";
+      d.textContent = kind === "rx" ? "RX" : kind === "tx" ? "TX" : "!!";
+      row.appendChild(d);
+    }
+
+    const body = document.createElement("span");
+    body.textContent = text;
+    row.appendChild(body);
+
+    /* 贴底才自动滚动，用户翻历史时不要把他拽回去 */
+    const nearBottom = elLog.scrollTop + elLog.clientHeight >= elLog.scrollHeight - 24;
+
+    elLog.appendChild(row);
+    while (elLog.childElementCount > 3000) {
+      elLog.removeChild(elLog.firstElementChild);
+    }
+    if (elOptAuto.checked && nearBottom) {
+      elLog.scrollTop = elLog.scrollHeight;
+    }
+  }
+
+  const logSys = (msg) => appendRow("sys", msg);
+  const logErr = (msg) => appendRow("err", msg);
+
+  function toHex(str) {
+    return Array.from(encoder.encode(str))
+      .map((b) => b.toString(16).padStart(2, "0").toUpperCase())
+      .join(" ");
+  }
+
+  /* ============ 串口 ============ */
+  async function connect() {
+    if (!("serial" in navigator)) {
+      elBanner.classList.add("show");
+      return;
+    }
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({
+        baudRate: Number(elBaud.value),
+        dataBits: 8,
+        stopBits: 1,
+        parity: "none",
+        flowControl: "none",
+      });
+      connected = true;
+      writer = port.writable.getWriter();
+      updateConnUI();
+      logSys("已连接，波特率 " + elBaud.value);
+      readLoopPromise = readLoop();
+      restartPolling();
+    } catch (e) {
+      logErr("打开串口失败：" + (e && e.message ? e.message : e));
+      port = null;
+      connected = false;
+      updateConnUI();
+    }
+  }
+
+  async function disconnect() {
+    stopPolling();
+    connected = false;
+
+    /* 顺序不能换：先 cancel 让 read() 立刻返回，再等读循环自己 releaseLock，
+     * 最后才能 releaseLock(writer) 和 close()。反过来做 port.close() 会抛
+     * 「端口仍被锁」而留下一个半开状态。 */
+    try { if (reader) { await reader.cancel(); } } catch (e) { /* 已经停了 */ }
+    try { if (readLoopPromise) { await readLoopPromise; } } catch (e) { /* 忽略 */ }
+    readLoopPromise = null;
+    reader = null;
+
+    try { if (writer) { writer.releaseLock(); } } catch (e) { /* 忽略 */ }
+    writer = null;
+
+    try { if (port) { await port.close(); } } catch (e) { /* 忽略 */ }
+    port = null;
+
+    updateConnUI();
+    logSys("已断开");
+  }
+
+  async function readLoop() {
+    const p = port;
+    reader = p.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) { break; }
+        if (value && value.length) { onBytes(value); }
+      }
+    } catch (e) {
+      if (connected) { logErr("读取中断：" + (e && e.message ? e.message : e)); }
+    } finally {
+      try { reader.releaseLock(); } catch (e) { /* 忽略 */ }
+      /* 非主动断开（拔线 / 串口异常）时把界面复位 */
+      if (port && connected) { disconnect(); }
+    }
+  }
+
+  function onBytes(bytes) {
+    rxBuf += decoder.decode(bytes, { stream: true });
+
+    const parts = rxBuf.split("\n");
+    rxBuf = parts.pop();                       /* 最后一段可能还没收完，留着 */
+    for (const raw of parts) {
+      const line = raw.replace(/\r/g, "");
+      if (line.length === 0) { continue; }
+      onLine(line);
+    }
+  }
+
+  function onLine(line) {
+    const s = line.trim();
+    if (s.length === 0) { return; }
+
+    /* S 状态行默认不写日志，避免 500ms 一条把日志刷满 */
+    const isStatus = s.charAt(0) === "S" && s.length > 2 && /^S\s+[-0-9]/.test(s);
+    if (!isStatus || elOptShowS.checked) {
+      appendRow("rx", elOptHex.checked ? toHex(line) : line);
+    }
+
+    if (isStatus) { parseStatus(s); return; }
+    if (s === "OK") { setPill("ok", "已受理"); return; }
+    if (s === "DONE") { setPill("ok", "已到位"); return; }
+    if (s.indexOf("ERR:") === 0) {
+      /* 锁住状态灯：否则 500ms 后的轮询会把错误冲成「已到位」，
+       * 用户根本来不及看清到底是被哪种错误拒的 */
+      errLock = true;
+      setPill("err", errText(s.slice(4)));
+      return;
+    }
+  }
+
+  const ERR_TEXT = {
+    CMD: "无法识别的命令",
+    ARG: "参数格式错误",
+    RANGE: "坐标超范围（检查是否把毫米当米发）",
+    OUT: "目标超出工作空间",
+    PATH: "直线路径中途穿出工作空间",
+    NOTIMPL: "该功能尚未实现（夹爪）",
+    LONG: "命令行过长，已丢弃",
+  };
+  function errText(code) {
+    return ERR_TEXT[code] || ("错误 " + code);
+  }
+
+  function parseStatus(s) {
+    const p = s.split(/\s+/);
+    if (p.length < 11) { return; }         /* S + 9 个值 + busy = 11 段 */
+    const mm = (v) => (Number(v) / 1000);
+
+    const x = mm(p[1]), y = mm(p[2]), z = mm(p[3]);
+    lastTarget = { x, y, z };
+    elStPos.textContent = x.toFixed(3) + " , " + y.toFixed(3) + " , " + z.toFixed(3) + "  m";
+
+    elStB.textContent = p[4] + "°";
+    elStS.textContent = p[5] + "°";
+    elStE.textContent = p[6] + "°";
+    elStW.textContent = p[7] + "°";
+
+    /* 夹爪：0° 是张开。闭合角由固件的 GRIP_ANGLE_CLOSE 决定（默认 60），
+     * 所以这里不写死 60，只按「接近 0 就算张开」来判断。 */
+    const g = Number(p[8]);
+    const isOpen = g <= 5;
+    elStG.textContent = g + "°" + (isOpen ? " 张开" : " 收紧");
+
+    /* 按钮跟着实际状态高亮：高亮的那个就是夹爪现在的位置。
+     * 注意这只是「固件认为它在哪」，不代表真的夹住了东西。 */
+    elBtnGripOpen.classList.toggle("active", isOpen);
+    elBtnGripClose.classList.toggle("active", !isOpen);
+
+    /* 旋转角（PA6）：0° 平行地面，60° 垂直地面（实测标定，见文件顶部常量）。
+     * 只做「接近哪个档」的标注，中间角度就只显示数值。 */
+    const r = Number(p[9]);
+    const nearHoriz = Math.abs(r - ROT_HORIZ_DEG) <= ROT_TOL;
+    const nearVert = Math.abs(r - ROT_VERT_DEG) <= ROT_TOL;
+    let rText = r + "°";
+    if (nearHoriz) { rText += " 平行"; }
+    else if (nearVert) { rText += " 垂直"; }
+    elStR.textContent = rText;
+
+    elBtnRotHoriz.classList.toggle("active", nearHoriz);
+    elBtnRotVert.classList.toggle("active", nearVert);
+
+    /* 用回报的「实际安装角」做正解来驱动姿态视图，而不是用目标坐标反算——
+     * 这样图上显示的是解算真正落到哪儿，和目标点之间的差就是 IK 误差。 */
+    pose = forwardKinematics(Number(p[4]), Number(p[5]), Number(p[6]), Number(p[7]));
+    refreshView();
+
+    if (errLock) { return; }               /* 报错优先显示，等下一次发送再解锁 */
+    if (p[10] === "1") {
+      setPill("wait", "运动中");
+    } else {
+      setPill("ok", "已到位");
+    }
+  }
+
+  /* ============ 发送 ============ */
+  function sendRaw(bytes, logText) {
+    writeChain = writeChain.then(async () => {
+      if (!writer) { throw new Error("串口未打开"); }
+      await writer.write(bytes);
+      if (logText !== null) { appendRow("tx", elOptHex.checked ? toHex(logText) : logText); }
+    }).catch((e) => {
+      logErr("发送失败：" + (e && e.message ? e.message : e));
+    });
+    return writeChain;
+  }
+
+  function sendText(text) {
+    return sendRaw(encoder.encode(text), text.replace(/\r?\n$/, ""));
+  }
+
+  /* 轮询：静默发送，不写 TX 日志 */
+  function sendSilent(text) {
+    return sendRaw(encoder.encode(text), null);
+  }
+
+  function hexToBytes(str) {
+    const clean = str.replace(/[^0-9a-fA-F]/g, "");
+    if (clean.length === 0 || clean.length % 2 !== 0) { return null; }
+    const out = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < out.length; i++) {
+      out[i] = parseInt(clean.substr(i * 2, 2), 16);
+    }
+    return out;
+  }
+
+  /* ============ 机械臂姿态视图 ============ */
+  /* 连杆长度，与 Servo_motor.c 的 mech_length 保持一致（米）：
+   *   l0 底座立柱 / l1 肩→肘 / l2 肘→腕 / l3 腕→末端 */
+  const LINK = { l0: 0.08, l1: 0.10, l2: 0.09, l3: 0.17 };
+  const D2R = Math.PI / 180;
+
+  /* 侧视图的固定坐标范围（米）。r = 水平距离，y = 离地高度。
+   * 用固定范围而不是自动缩放，是为了让姿态变化时画面不跟着抖。 */
+  const R_MIN = -0.10, R_MAX = 0.42, Y_MIN = -0.03, Y_MAX = 0.46;
+
+  let pose = null;        /* 由 ? 回报的舵机角换算出的真实姿态 */
+  let wsCache = null;     /* 工作空间底图，只在画布尺寸变化时重算 */
+
+  /**
+   * 正解：舵机安装角 → 各关节位置（米）
+   * 严格按 model.c 的标定反推，方向反了整个图就是镜像的：
+   *   a1 = 180 + (−1)·th1  →  th1 = 180 − a1
+   *   a2 = 180 + (+1)·th2  →  th2 = a2 − 180
+   *   a3 = 90  + (−1)·th3  →  th3 = 90 − a3
+   *   waist = yaw + 90     →  yaw = waist − 90
+   * elbow / wrist / tip 用 (r, h) 表示，h 是相对肩关节的高度，画图时再加 l0。
+   */
+  function forwardKinematics(waist, a1, a2, a3) {
+    const th1 = (180 - a1) * D2R;
+    const th2 = (a2 - 180) * D2R;
+    const th3 = (90 - a3) * D2R;
+    const alpha = th1 + th2 + th3;
+    const yaw = (waist - 90) * D2R;
+
+    const elbow = { r: LINK.l1 * Math.cos(th1), h: LINK.l1 * Math.sin(th1) };
+    const wrist = {
+      r: elbow.r + LINK.l2 * Math.cos(th1 + th2),
+      h: elbow.h + LINK.l2 * Math.sin(th1 + th2),
+    };
+    const tip = {
+      r: wrist.r + LINK.l3 * Math.cos(alpha),
+      h: wrist.h + LINK.l3 * Math.sin(alpha),
+    };
+
+    return {
+      th1: th1, th2: th2, th3: th3, alpha: alpha, yaw: yaw,
+      elbow: elbow, wrist: wrist, tip: tip,
+      x: tip.r * Math.cos(yaw),
+      y: tip.h + LINK.l0,
+      z: tip.r * Math.sin(yaw),
+    };
+  }
+
+  /* 演示姿态：目标 (0.28, 0.10) 的解算结果 B90 S120 E72 W42，
+   * 只在未连接时占位，让界面不至于一片空白 */
+  const DEMO_POSE = forwardKinematics(90, 120, 72, 42);
+
+  /* 世界坐标 → 屏幕坐标的映射 */
+  function fitMap(W, H, pad) {
+    const s = Math.min((W - 2 * pad) / (R_MAX - R_MIN), (H - 2 * pad) / (Y_MAX - Y_MIN));
+    const ox = pad + (W - 2 * pad - (R_MAX - R_MIN) * s) / 2;
+    const oy = pad + (H - 2 * pad - (Y_MAX - Y_MIN) * s) / 2;
+    return {
+      s: s,
+      px: function (r) { return ox + (r - R_MIN) * s; },
+      py: function (y) { return H - oy - (y - Y_MIN) * s; },
+    };
+  }
+
+  /**
+   * 生成工作空间底图
+   * 枚举 (th1, th2) 的所有可行组合，再让 α 在 [−90°, 90°] 内自由取值——
+   * 这正是固件的可达性定义：α 是冗余自由度，取得到就算可达。
+   * 关节行程：a1∈[0,180] → th1∈[0,180]；a2∈[45,180] → th2∈[−135,0]；
+   * a3∈[0,180] → th3∈[−90,90]，用 α − th1 − th2 反查。
+   */
+  function buildWorkspace(W, H, m) {
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(W));
+    c.height = Math.max(1, Math.round(H));
+    const g = c.getContext("2d");
+    const img = g.createImageData(c.width, c.height);
+    const d = img.data;
+
+    for (let a1 = 0; a1 <= 180; a1 += 3) {
+      const th1 = (180 - a1) * D2R;
+      const c1 = Math.cos(th1), s1 = Math.sin(th1);
+
+      for (let a2 = 45; a2 <= 180; a2 += 3) {
+        const th2 = (a2 - 180) * D2R;
+        const wr = LINK.l1 * c1 + LINK.l2 * Math.cos(th1 + th2);
+        const wh = LINK.l1 * s1 + LINK.l2 * Math.sin(th1 + th2);
+
+        for (let ad = -90; ad <= 90; ad += 4) {
+          const th3 = ad * D2R - th1 - th2;
+          if (th3 < -Math.PI / 2 || th3 > Math.PI / 2) { continue; }
+
+          const tr = wr + LINK.l3 * Math.cos(ad * D2R);
+          const th = wh + LINK.l3 * Math.sin(ad * D2R);
+          const px = Math.round(m.px(tr));
+          const py = Math.round(m.py(th + LINK.l0));
+          if (px < 0 || py < 0 || px >= c.width || py >= c.height) { continue; }
+
+          const i = (py * c.width + px) * 4;
+          d[i] = 37; d[i + 1] = 99; d[i + 2] = 235;
+          d[i + 3] = Math.min(88, d[i + 3] + 6);
+        }
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return c;
+  }
+
+  function drawArm() {
+    const cv = elArmCanvas;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (W < 20 || H < 20) { return; }
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const bw = Math.round(W * dpr), bh = Math.round(H * dpr);
+    if (cv.width !== bw || cv.height !== bh) {
+      cv.width = bw;
+      cv.height = bh;
+      wsCache = null;
+    }
+
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const m = fitMap(W, H, 16);
+
+    /* 工作空间底图：一眼看出 ERR:OUT 是怎么来的 */
+    if (elOptWS.checked) {
+      if (wsCache === null) { wsCache = buildWorkspace(W, H, m); }
+      if (wsCache) {
+        ctx.save();
+        ctx.globalAlpha = 0.62;
+        ctx.drawImage(wsCache, 0, 0, W, H);
+        ctx.restore();
+      }
+    }
+
+    /* 地面 */
+    ctx.strokeStyle = "#cbd5e1";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(m.px(R_MIN), m.py(0));
+    ctx.lineTo(m.px(R_MAX), m.py(0));
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    /* 底座立柱 */
+    ctx.strokeStyle = "#94a3b8";
+    ctx.lineWidth = 9;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(m.px(0), m.py(0));
+    ctx.lineTo(m.px(0), m.py(LINK.l0));
+    ctx.stroke();
+
+    /* 没连板子时用一个演示姿态占位，方便先看渲染效果；
+     * 接上之后立刻被真实角度覆盖。用半透明画，避免被误当成真机状态。 */
+    const shown = pose || (connected ? null : DEMO_POSE);
+    if (!shown) {
+      ctx.fillStyle = "#9aa3ae";
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("等待单片机回报角度…", W / 2, H / 2);
+      ctx.textAlign = "start";
+      drawTopView();
+      return;
+    }
+
+    ctx.save();
+    if (!pose) { ctx.globalAlpha = 0.34; }
+
+    const P = (p) => [m.px(p.r), m.py(p.h + LINK.l0)];
+    const sh = [m.px(0), m.py(LINK.l0)];
+    const el = P(shown.elbow);
+    const wr = P(shown.wrist);
+    const tp = P(shown.tip);
+
+    /* 目标点：用回报的目标坐标，投影到当前朝向的剖面 (r, y) */
+    if (lastTarget) {
+      const rt = Math.hypot(lastTarget.x, lastTarget.z);
+      const tx = m.px(rt), ty = m.py(lastTarget.y);
+
+      ctx.strokeStyle = "#f59e0b";
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(tp[0], tp[1]);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.strokeStyle = "#dc2626";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(tx - 6, ty); ctx.lineTo(tx + 6, ty);
+      ctx.moveTo(tx, ty - 6); ctx.lineTo(tx, ty + 6);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(tx, ty, 8, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    /* 连杆：肩→肘→腕 用主色，腕→末端（工具段）浅一档 */
+    ctx.strokeStyle = "#334155";
+    ctx.lineWidth = 10;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(sh[0], sh[1]);
+    ctx.lineTo(el[0], el[1]);
+    ctx.lineTo(wr[0], wr[1]);
+    ctx.stroke();
+
+    ctx.strokeStyle = "#64748b";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(wr[0], wr[1]);
+    ctx.lineTo(tp[0], tp[1]);
+    ctx.stroke();
+
+    /* 夹爪两指：沿姿态角 α 方向伸出，能看出夹爪是水平还是斜的 */
+    const ux = Math.cos(shown.alpha), uy = -Math.sin(shown.alpha);
+    const vx = -uy, vy = ux;
+    const fl = 0.020 * m.s, gap = 0.0075 * m.s;
+
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 2.6;
+    for (const sgn of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(tp[0] + vx * gap * sgn, tp[1] + vy * gap * sgn);
+      ctx.lineTo(tp[0] + ux * fl + vx * gap * sgn, tp[1] + uy * fl + vy * gap * sgn);
+      ctx.stroke();
+    }
+
+    /* 关节 */
+    [[sh, 4.6], [el, 4.0], [wr, 4.0]].forEach(([p, r]) => {
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.strokeStyle = "#2563eb";
+      ctx.lineWidth = 2.4;
+      ctx.stroke();
+    });
+
+    /* 末端 */
+    ctx.beginPath();
+    ctx.arc(tp[0], tp[1], 3.6, 0, Math.PI * 2);
+    ctx.fillStyle = "#ea580c";
+    ctx.fill();
+
+    ctx.restore();
+
+    if (!pose) {
+      ctx.fillStyle = "#9aa3ae";
+      ctx.font = "11.5px system-ui, sans-serif";
+      ctx.fillText("演示姿态（未连接）", 12, H - 10);
+    }
+
+    drawTopView();
+  }
+
+  /* 俯视图：看底座偏航到底转到哪了，侧视图看不出这个 */
+  function drawTopView() {
+    const cv = elTopCanvas;
+    const size = 96;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (cv.width !== Math.round(size * dpr)) {
+      cv.width = Math.round(size * dpr);
+      cv.height = Math.round(size * dpr);
+    }
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size, size);
+
+    const cx = size / 2, cy = size / 2;
+    const k = (size / 2 - 7) / 0.40;          /* 视野 ±0.40m */
+    const X = (v) => cx + v * k;
+    const Z = (v) => cy - v * k;              /* 屏幕上「向上」为 +z */
+
+    ctx.strokeStyle = "#e6eaf0";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, (LINK.l1 + LINK.l2 + LINK.l3) * k, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = "#f1f4f8";
+    ctx.beginPath();
+    ctx.moveTo(4, cy); ctx.lineTo(size - 4, cy);
+    ctx.moveTo(cx, 4); ctx.lineTo(cx, size - 4);
+    ctx.stroke();
+
+    if (pose) {
+      ctx.strokeStyle = "#94a3b8";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(X(pose.x), Z(pose.z));
+      ctx.stroke();
+
+      ctx.fillStyle = "#ea580c";
+      ctx.beginPath();
+      ctx.arc(X(pose.x), Z(pose.z), 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (lastTarget) {
+      ctx.strokeStyle = "#dc2626";
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.arc(X(lastTarget.x), Z(lastTarget.z), 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = "#334155";
+    ctx.beginPath();
+    ctx.arc(cx, cy, 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /* 重画视图并刷新底部读数 */
+  function refreshView() {
+    drawArm();
+
+    if (!pose) {
+      elVTip.textContent = "—";
+      elVAlpha.textContent = "—";
+      elVErr.textContent = "—";
+      return;
+    }
+
+    elVTip.textContent = pose.x.toFixed(3) + ", " + pose.y.toFixed(3) + ", " + pose.z.toFixed(3) + " m";
+    elVAlpha.textContent = (pose.alpha / D2R).toFixed(1) + "°";
+
+    if (lastTarget) {
+      const d = Math.hypot(pose.x - lastTarget.x, pose.y - lastTarget.y, pose.z - lastTarget.z);
+      elVErr.textContent = (d * 1000).toFixed(1) + " mm";
+    } else {
+      elVErr.textContent = "—";
+    }
+  }
+
+  /* ============ 轮询 ============ */
+  function restartPolling() {
+    stopPolling();
+    if (!connected || !elPollOn.checked) { return; }
+    pollTimer = setInterval(() => {
+      if (connected) { sendSilent("?\r\n"); }
+    }, 500);
+  }
+  function stopPolling() {
+    if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  /* ============ 运动控制 ============ */
+  const unitScale = () => (elUnit.value === "mm" ? 0.001 : 1);
+
+  function readTargets() {
+    const k = unitScale();
+    return {
+      x: parseFloat(elX.value) * k,
+      y: parseFloat(elY.value) * k,
+      z: parseFloat(elZ.value) * k,
+    };
+  }
+
+  function buildCmd() {
+    const t = readTargets();
+    if (!isFinite(t.x) || !isFinite(t.y) || !isFinite(t.z)) { return null; }
+    return "M " + t.x.toFixed(4) + " " + t.y.toFixed(4) + " " + t.z.toFixed(4);
+  }
+
+  function refreshPreview() {
+    const c = buildCmd();
+    const txt = c === null ? "坐标必须是数字" : c;
+    /* 预览不再单独占一行（矮屏下太奢侈），改成按钮的悬停提示：
+     * 鼠标停在「发送 M 指令」上就能核对将要发出去的完整命令。 */
+    elPreview.textContent = txt;
+    elBtnSend.title = "将发送：" + txt;
+  }
+
+  function setPill(kind, text) {
+    elPill.className = "pill " + kind;
+    elPill.textContent = text;
+  }
+
+  async function sendMove() {
+    const cmd = buildCmd();
+    if (cmd === null) {
+      setPill("err", "坐标必须是数字");
+      return;
+    }
+    errLock = false;                       /* 新指令发出，解除上一次的错误锁 */
+    setPill("wait", "已发送，等待受理…");
+    await sendText(cmd + "\r\n");
+  }
+
+  /* ============ UI 同步 ============ */
+  function updateConnUI() {
+    elDot.className = "dot" + (connected ? " on" : "");
+    elConnState.textContent = connected ? ("已连接 " + elBaud.value) : "未连接";
+    elBtnConn.textContent = connected ? "断开" : "连接串口";
+    elBtnConn.classList.toggle("primary", !connected);
+    elBtnSend.disabled = !connected;
+    elBtnGripOpen.disabled = !connected;
+    elBtnGripClose.disabled = !connected;
+    elBtnRotHoriz.disabled = !connected;
+    elBtnRotVert.disabled = !connected;
+    elBtnRotSet.disabled = !connected;
+    elInRot.disabled = !connected;
+    elBtnManual.disabled = !connected;
+    elManual.disabled = !connected;
+    elBaud.disabled = connected;
+
+    /* 断开后清掉夹爪/旋转高亮：那些状态来自上一次 ? 回报，已经不可信了 */
+    if (!connected) {
+      elBtnGripOpen.classList.remove("active");
+      elBtnGripClose.classList.remove("active");
+      elBtnRotHoriz.classList.remove("active");
+      elBtnRotVert.classList.remove("active");
+    }
+
+    /* 连接状态变了要重画：未连接时画演示姿态，连上后等真实角度 */
+    refreshView();
+  }
+
+  /* ============ 事件 ============ */
+  elBtnConn.addEventListener("click", () => { connected ? disconnect() : connect(); });
+
+  elBtnSend.addEventListener("click", sendMove);
+
+  /* 夹爪：0 = 张开，1 = 闭合。
+   * 固件里用 SetAngleNow 立即到位，所以只回 OK、没有 DONE ——
+   * 不像 M 指令那样需要等运动结束。 */
+  async function sendGrip(v) {
+    errLock = false;
+    setPill("wait", v === 1 ? "夹爪收紧…" : "夹爪张开…");
+    await sendText("G " + v + "\r\n");
+  }
+  elBtnGripOpen.addEventListener("click", () => { if (connected) { sendGrip(0); } });
+  elBtnGripClose.addEventListener("click", () => { if (connected) { sendGrip(1); } });
+
+  /* 夹爪旋转（PA6）：0° 平行地面，60° 垂直地面（实测），中间任意角度。
+   * 也是立即到位，只回 OK、没有 DONE。 */
+  async function sendRotate(deg) {
+    const a = Number(deg);
+    if (!isFinite(a) || a < 0 || a > 180) {
+      logSys("旋转角度要在 0~180 之间，当前输入：" + deg);
+      return;
+    }
+    errLock = false;
+    setPill("wait", "旋转到 " + a + "°…");
+    await sendText("R " + a + "\r\n");
+  }
+  elBtnRotHoriz.addEventListener("click", () => { if (connected) { sendRotate(ROT_HORIZ_DEG); } });
+  elBtnRotVert.addEventListener("click", () => { if (connected) { sendRotate(ROT_VERT_DEG); } });
+  elBtnRotSet.addEventListener("click", () => { if (connected) { sendRotate(elInRot.value); } });
+
+  elBtnSync.addEventListener("click", () => {
+    if (!lastTarget) { logSys("还没有收到状态，先等一次轮询"); return; }
+    const k = elUnit.value === "mm" ? 1000 : 1;
+    const dp = elUnit.value === "mm" ? 0 : 3;
+    elX.value = (lastTarget.x * k).toFixed(dp);
+    elY.value = (lastTarget.y * k).toFixed(dp);
+    elZ.value = (lastTarget.z * k).toFixed(dp);
+    refreshPreview();
+  });
+
+  elUnit.addEventListener("change", () => {
+    /* 切换单位时把输入框里的数换算过去，别让人重新输一遍 */
+    const toMm = elUnit.value === "mm";
+    [elX, elY, elZ].forEach((el) => {
+      const v = parseFloat(el.value);
+      if (isFinite(v)) {
+        el.value = toMm ? (v * 1000).toFixed(0) : (v / 1000).toFixed(3);
+      }
+      el.step = toMm ? "5" : "0.005";
+    });
+    refreshPreview();
+  });
+
+  [elX, elY, elZ].forEach((el) => el.addEventListener("input", refreshPreview));
+
+  /* 在坐标框里直接回车 = 点发送按钮，少一次鼠标移动 */
+  [elX, elY, elZ].forEach((el) => el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (connected) { sendMove(); }
+    }
+  }));
+
+  elPollOn.addEventListener("change", restartPolling);
+
+  elOptWS.addEventListener("change", () => {
+    /* 不置空 wsCache：画布尺寸没变，底图还是对的，省掉一次 12 万点的重算 */
+    refreshView();
+  });
+
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (resizeTimer) { clearTimeout(resizeTimer); }
+    resizeTimer = setTimeout(() => {
+      wsCache = null;
+      refreshView();
+    }, 120);
+  });
+
+  elBtnClear.addEventListener("click", () => { elLog.innerHTML = ""; });
+
+  elOptHex.addEventListener("change", () => {
+    logSys(elOptHex.checked ? "已切换为 HEX 显示（只影响新日志）" : "已切换为文本显示");
+  });
+
+  elBtnManual.addEventListener("click", sendManual);
+
+  function sendManual() {
+    const raw = elManual.value;
+    if (raw.length === 0) { return; }
+
+    if (elOptHexSend.checked) {
+      const bytes = hexToBytes(raw);
+      if (bytes === null) { logErr("HEX 格式不对：需要偶数个十六进制字符，如 AA 55 01"); return; }
+      sendRaw(bytes, raw.trim());
+    } else {
+      sendText(raw + (elOptCRLF.checked ? "\r\n" : ""));
+    }
+
+    if (history[history.length - 1] !== raw) { history.push(raw); }
+    if (history.length > 100) { history.shift(); }
+    histIdx = -1;
+  }
+
+  elManual.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendManual();
+      return;
+    }
+    /* ↑/↓ 翻历史 */
+    if (e.key === "ArrowUp" && history.length) {
+      e.preventDefault();
+      histIdx = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1);
+      elManual.value = history[histIdx];
+    }
+    if (e.key === "ArrowDown" && history.length) {
+      e.preventDefault();
+      histIdx = histIdx < 0 ? -1 : Math.min(history.length - 1, histIdx + 1);
+      elManual.value = histIdx < 0 ? "" : history[histIdx];
+    }
+  });
+
+  /* 浏览器级拔线事件 */
+  if ("serial" in navigator) {
+    navigator.serial.addEventListener("disconnect", () => {
+      if (connected) { logErr("串口设备已拔出"); disconnect(); }
+    });
+  }
+
+  /* ============ 启动 ============ */
+  if (!("serial" in navigator)) {
+    elBanner.classList.add("show");
+  }
+  refreshPreview();
+  updateConnUI();
+  refreshView();
+  logSys("就绪。点击右上角「连接串口」，在弹出的列表里选 STM32 对应的串口。");
+  logSys("固件协议：M x y z（米，直线运动）/ G 0|1（夹爪）/ R <角度>（旋转 0~180，0=平行 60=垂直）/ ?（查状态）");
+  if (location.protocol === "file:") {
+    logSys("提示：若点击连接没有反应，说明浏览器禁止了 file:// 下的串口权限。" +
+           "在本目录执行 python -m http.server 8000，然后访问 http://localhost:8000/serial_console.html");
+  }
+})();
+</script>
+</body>
+</html>

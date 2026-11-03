@@ -1,0 +1,23 @@
+# 统一换行策略：入库一律 LF，检出时按平台自动转换
+* text=auto
+
+# 源码显式声明为文本，避免被误判为二进制
+*.c    text
+*.h    text
+*.s    text
+*.cpp  text
+*.py   text
+*.md   text
+*.html text
+*.ioc  text
+*.ld   text
+
+# 二进制产物
+*.lib   binary
+*.a     binary
+*.hex   binary
+*.bin   binary
+*.elf   binary
+*.axf   binary
+*.png   binary
+*.jpg   binary

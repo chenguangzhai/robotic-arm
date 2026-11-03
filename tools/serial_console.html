@@ -1,0 +1,2302 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>机械臂串口控制台</title>
+<style>
+  :root{
+    --bg:#eef1f5; --panel:#ffffff; --line:#e2e6ec; --text:#1b2027; --muted:#6b7480;
+    --accent:#2563eb; --accent-hover:#1d4fd8; --accent-soft:#e8efff;
+    --ok:#15803d; --ok-soft:#e7f6ec;
+    --err:#c81e1e; --err-soft:#fdecec;
+    --warn:#b45309; --warn-soft:#fdf3e3;
+    --mono: ui-monospace, "Cascadia Mono", "JetBrains Mono", Consolas, "Courier New", monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.55 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+
+  /* ---------- 顶栏 ---------- */
+  header{
+    display:flex; align-items:center; gap:14px;
+    padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line);
+    flex:0 0 auto;
+  }
+  .brand{display:flex; align-items:baseline; gap:10px; margin-right:auto}
+  .brand h1{font-size:15px; margin:0; font-weight:650; letter-spacing:.2px}
+  .brand span{font-size:12px; color:var(--muted)}
+
+  .conn{display:flex; align-items:center; gap:8px}
+  .conn select{width:auto; min-width:104px}
+  .dot{width:8px; height:8px; border-radius:50%; background:#c2c8d0; flex:0 0 auto}
+  .dot.on{background:var(--ok); box-shadow:0 0 0 3px var(--ok-soft)}
+  .conn-state{font-size:12.5px; color:var(--muted); min-width:96px}
+
+  /* ---------- 布局 ---------- */
+  main{
+    flex:1; min-height:0; display:grid;
+    grid-template-columns:340px minmax(300px,1fr) minmax(0,1.05fr);
+    gap:14px; padding:14px;
+  }
+  .panel{
+    background:var(--panel); border:1px solid var(--line); border-radius:12px;
+    display:flex; flex-direction:column; min-height:0;
+    box-shadow:0 1px 2px rgba(16,24,40,.04);
+  }
+  .panel-head{
+    padding:11px 14px; border-bottom:1px solid var(--line);
+    display:flex; align-items:center; justify-content:space-between; gap:8px; flex:0 0 auto;
+  }
+  .panel-head h2{font-size:13px; margin:0; font-weight:650; letter-spacing:.3px}
+  .panel-body{padding:11px 12px; overflow:auto; min-height:0}
+
+  /* ---------- 表单 ---------- */
+  .field-row{display:grid; grid-template-columns:repeat(3,1fr); gap:8px}
+  .field label{display:block; font-size:11.5px; color:var(--muted); margin-bottom:4px}
+  input[type=number], input[type=text], select{
+    width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:8px;
+    background:#fff; color:var(--text); font-family:var(--mono); font-size:13px; outline:none;
+    transition:border-color .15s, box-shadow .15s;
+  }
+  input:focus, select:focus{border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-soft)}
+  input:disabled, select:disabled{background:#f7f9fc; color:#a4acb6}
+
+  button{
+    cursor:pointer; border:1px solid var(--line); background:#fff; color:var(--text);
+    padding:7px 12px; border-radius:8px; font-size:13px; font-family:inherit;
+    transition:background .15s, border-color .15s, opacity .15s;
+  }
+  button:hover{background:#f6f8fb}
+  button:disabled{opacity:.42; cursor:not-allowed}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600}
+  button.primary:hover:not(:disabled){background:var(--accent-hover)}
+  button.wide{width:100%; padding:8px; margin-top:8px; font-size:13px}
+
+  /* ---------- 夹爪按钮 ---------- */
+  /* 加大一号，并按「当前实际状态」高亮：高亮的那个就是夹爪现在的位置。
+   * 夹爪没有位置反馈，只能靠 ? 回报的舵机角推断，所以这个高亮
+   * 代表的是「固件认为它在哪」，不是「真的夹住了」。 */
+  button.grip{
+    width:100%; padding:8px 8px; font-size:13px; font-weight:600;
+    display:flex; align-items:center; justify-content:center; gap:6px;
+  }
+  button.grip.active{
+    background:var(--accent-soft); border-color:var(--accent); color:var(--accent);
+    font-weight:700; box-shadow:0 0 0 3px rgba(37,99,235,.12);
+  }
+  button.grip.active:hover{background:var(--accent-soft)}
+  /* 夹爪示意图标：两道竖线，收紧时向内靠 */
+  .grip-glyph{
+    display:inline-block; width:16px; height:12px; position:relative; flex:0 0 auto;
+  }
+  .grip-glyph::before, .grip-glyph::after{
+    content:""; position:absolute; top:0; bottom:0; width:3px; border-radius:1px;
+    background:currentColor; transition:left .18s, right .18s;
+  }
+  .grip-glyph::before{left:1px}
+  .grip-glyph::after{right:1px}
+  button.grip.active .grip-glyph::before{left:4px}
+  button.grip.active .grip-glyph::after{right:4px}
+  /* 档位角标：按钮上直接标出发给固件的角度，
+   * 免得「平行/垂直到底是几度」还要回头翻文档 */
+  button.grip .deg{
+    font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size:11px; font-weight:600; opacity:.68; flex:0 0 auto;
+  }
+  button.grip.active .deg{opacity:.9}
+
+  .hint{font-size:11.5px; color:var(--muted); margin-top:4px}
+
+  /* ---------- 示教点列表 ---------- */
+  /* 每点一行：序号 / 6 个关节角 / 停留时间 / 删除。
+     用等宽字体对齐数字，扫一眼就能看出哪两个点差不多 —— 示教时重复点最常见。 */
+  .plist{
+    margin-top:8px; border:1px solid var(--line); border-radius:8px;
+    max-height:190px; overflow-y:auto;
+  }
+  .plist:empty{display:none}
+  .prow{
+    display:grid; grid-template-columns:22px 1fr 46px 20px;
+    align-items:center; gap:6px; padding:4px 8px;
+    font-family:var(--mono); font-size:11.5px; border-bottom:1px solid var(--line);
+  }
+  .prow:last-child{border-bottom:none}
+  .prow.active{background:var(--accent-soft)}
+  .prow .pi{color:var(--muted)}
+  .prow .pa{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .prow .pd{color:var(--muted); text-align:right; font-size:11px}
+  .prow .px{
+    border:none; background:none; padding:0; width:18px; height:18px; line-height:1;
+    color:var(--muted); font-size:14px; border-radius:4px;
+  }
+  .prow .px:hover{background:var(--err-soft); color:var(--err)}
+  .section-label{
+    font-size:10.5px; font-weight:650; color:var(--muted); letter-spacing:.6px;
+    text-transform:uppercase; margin:9px 0 5px;
+  }
+  .section-label:first-child{margin-top:0}
+
+  /* ---------- 状态卡 ---------- */
+  .pill{
+    display:inline-flex; align-items:center; gap:6px; padding:3px 10px;
+    border-radius:999px; font-size:12px; font-weight:650;
+  }
+  .pill.idle{background:#eef1f5; color:var(--muted)}
+  .pill.ok{background:var(--ok-soft); color:var(--ok)}
+  .pill.err{background:var(--err-soft); color:var(--err)}
+  .pill.wait{background:var(--warn-soft); color:var(--warn)}
+
+  /* 3 列：目标坐标占满一行，然后 B/S/E 一行、W/G/R 一行，比 2 列少一行 */
+  .status-grid{display:grid; grid-template-columns:repeat(3,1fr); gap:6px}
+  .stat{background:#f7f9fc; border:1px solid var(--line); border-radius:8px; padding:5px 8px}
+  .stat .k{font-size:10.5px; color:var(--muted); white-space:nowrap}
+  .stat .v{font-family:var(--mono); font-size:13.5px; font-weight:650; margin-top:0}
+  .stat.wide{grid-column:span 3}
+
+  /* ---------- 机械臂视图 ---------- */
+  .view-wrap{position:relative; flex:1; min-height:0; padding:4px}
+  #armCanvas{width:100%; height:100%; display:block; border-radius:9px}
+  .top-wrap{position:absolute; top:10px; right:10px; width:96px; text-align:center}
+  .top-wrap canvas{
+    width:96px; height:96px; display:block;
+    background:rgba(255,255,255,.88); border:1px solid var(--line); border-radius:9px;
+  }
+  .top-wrap span{font-size:10.5px; color:var(--muted)}
+
+  /* 视图切换：2D 剖面 / 3D 立体 */
+  .seg{display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden}
+  .seg button{
+    border:0; border-radius:0; padding:3px 10px; font-size:11.5px; font-weight:650;
+    background:var(--panel); color:var(--muted); line-height:1.5;
+  }
+  .seg button + button{border-left:1px solid var(--line)}
+  .seg button.on{background:var(--accent); color:#fff}
+  .seg button:focus-visible{outline:2px solid var(--accent); outline-offset:-2px}
+
+  /* 3D 模式下的画布交互提示与光标 */
+  #armCanvas.mode3d{cursor:grab; touch-action:none}
+  #armCanvas.mode3d.dragging{cursor:grabbing}
+  .view-hint{
+    position:absolute; left:12px; bottom:9px; max-width:72%;
+    font-size:11px; color:var(--muted); background:rgba(255,255,255,.84);
+    padding:2px 8px; border-radius:6px; pointer-events:none; display:none;
+  }
+  .view-hint.show{display:block}
+  .view-foot{
+    display:flex; gap:16px; flex-wrap:wrap; align-items:baseline;
+    padding:9px 14px; border-top:1px solid var(--line); font-size:12px; color:var(--muted);
+    flex:0 0 auto;
+  }
+  .view-foot b{color:var(--text); font-family:var(--mono); font-weight:650; font-size:12.5px}
+
+  /* ---------- 日志 ---------- */
+  #log{
+    flex:1; min-height:0; overflow:auto; padding:9px 12px;
+    font-family:var(--mono); font-size:12.5px; line-height:1.62; background:#fbfcfe;
+  }
+  .log-row{display:flex; gap:7px; white-space:pre-wrap; word-break:break-all; padding:1px 0}
+  .log-row .t{color:#9aa3ae; flex:0 0 auto; font-size:11.5px; padding-top:1px}
+  .log-row .d{flex:0 0 auto; font-weight:700; width:20px; font-size:11px; padding-top:1px}
+  .log-row.rx .d{color:var(--ok)}
+  .log-row.tx .d{color:var(--accent)}
+  .log-row.sys{color:var(--muted); font-style:italic}
+  .log-row.err{color:var(--err)}
+  .log-row.err .d{color:var(--err)}
+
+  .send-bar{
+    display:flex; gap:8px; padding:10px 12px; border-top:1px solid var(--line);
+    align-items:center; flex:0 0 auto; background:var(--panel);
+    border-radius:0 0 12px 12px;
+  }
+  .send-bar input[type=text]{flex:1}
+  .toolbar{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+  .chk{display:inline-flex; align-items:center; gap:5px; font-size:12px; color:var(--muted); cursor:pointer; user-select:none}
+  .chk input{accent-color:var(--accent); margin:0}
+
+  .banner{
+    display:none; margin:0 14px; margin-top:14px; padding:10px 14px;
+    background:var(--err-soft); border:1px solid #f3c9c9; border-radius:10px;
+    color:var(--err); font-size:13px;
+  }
+  .banner.show{display:block}
+
+  @media (max-width: 1180px){
+    main{grid-template-columns:340px minmax(0,1fr); grid-template-rows:minmax(240px,1.15fr) minmax(200px,1fr)}
+    .panel-log{grid-column:1 / -1}
+  }
+  @media (max-width: 820px){
+    main{grid-template-columns:1fr; grid-template-rows:auto minmax(240px,1fr) minmax(200px,1fr)}
+    .panel-log{grid-column:auto}
+  }
+
+  /* 矮屏（笔记本 1366×768 这类）：左栏整体再压一档，
+   * 目标是「不用滚动就能看到运动控制面板的全部内容」。
+   * 只调间距和字号，不动结构，大屏不受影响。 */
+  @media (max-height: 820px){
+    .panel-body{padding:8px 10px}
+    .section-label{margin:6px 0 4px; font-size:10px}
+    .field label{font-size:11px; margin-bottom:2px}
+    input[type=number], input[type=text], select{padding:5px 8px; font-size:12.5px}
+    button.grip{padding:6px 6px; font-size:12.5px}
+    button.wide{margin-top:6px; padding:7px; font-size:12.5px}
+    .stat{padding:3px 6px}
+    .stat .k{font-size:10px}
+    .stat .v{font-size:12.5px}
+    .hint{font-size:11px; margin-top:3px}
+    .status-grid{gap:4px}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <h1>机械臂串口控制台</h1>
+    <span>USART1 · 115200 8N1</span>
+  </div>
+
+  <div class="conn">
+    <select id="baud" title="波特率">
+      <option>9600</option>
+      <option>19200</option>
+      <option>38400</option>
+      <option>57600</option>
+      <option selected>115200</option>
+      <option>230400</option>
+      <option>460800</option>
+      <option>921600</option>
+    </select>
+    <button id="btnConn" class="primary">连接串口</button>
+    <div class="dot" id="dot"></div>
+    <div class="conn-state" id="connState">未连接</div>
+  </div>
+</header>
+
+<div class="banner" id="banner">
+  当前浏览器不支持 Web Serial API。请用 <b>Chrome</b> 或 <b>Edge</b> 打开本文件（Firefox / Safari 不支持）。
+</div>
+
+<main>
+  <!-- ================= 左：运动控制 ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>运动控制</h2>
+      <span class="pill idle" id="resultPill">待机</span>
+    </div>
+
+    <div class="panel-body">
+      <div class="section-label">目标坐标</div>
+
+      <div class="field-row">
+        <div class="field">
+          <label for="inX">X 前方</label>
+          <input type="number" id="inX" value="0.28" step="0.005" min="0" max="1">
+        </div>
+        <div class="field">
+          <label for="inY">Y 高度</label>
+          <input type="number" id="inY" value="0.10" step="0.005" min="0" max="1">
+        </div>
+        <div class="field">
+          <label for="inZ">Z 横向</label>
+          <input type="number" id="inZ" value="0.00" step="0.005" min="-1" max="1">
+        </div>
+      </div>
+
+      <div class="field-row" style="grid-template-columns:1fr 1fr; margin-top:6px">
+        <select id="unit" title="坐标单位">
+          <option value="m" selected>米（m）</option>
+          <option value="mm">毫米（mm）</option>
+        </select>
+        <button id="btnSync" title="把当前目标读回输入框">读回目标</button>
+      </div>
+
+      <button id="btnSend" class="primary wide" disabled>发送 M 指令</button>
+      <div class="hint" id="cmdPreview" style="display:none">M 0.2800 0.1000 0.0000</div>
+
+      <div class="section-label">转向 / 偏航</div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr">
+        <button id="btnYawNeg" disabled title="发送 Y，偏航角减小一个步长（只转底座）">−15°</button>
+        <button id="btnYawPos" disabled title="发送 Y，偏航角增大一个步长（只转底座）">+15°</button>
+      </div>
+      <div class="field-row" style="grid-template-columns:1fr auto; margin-top:6px">
+        <input type="number" id="inYawStep" value="15" min="1" max="88" step="5"
+               title="每次转向的步长（度），范围 1~88"
+               aria-label="转向步长，单位度">
+        <button id="btnYawZero" disabled title="发送 Y 0，回正前方">回正</button>
+      </div>
+      <div class="hint" id="yawHint">只转底座，肩/肘/腕不动。半径与高度锁定在当前值。</div>
+
+      <div class="section-label">夹爪 / 旋转</div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr">
+        <button id="btnGripOpen" class="grip" disabled>
+          <span class="grip-glyph"></span>张开
+        </button>
+        <button id="btnGripClose" class="grip" disabled>
+          <span class="grip-glyph"></span>收紧
+        </button>
+      </div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr; margin-top:6px">
+        <button id="btnRotHoriz" class="grip" disabled title="发送 R 0">平行地面 <span class="deg">0°</span></button>
+        <button id="btnRotVert" class="grip" disabled title="发送 R 60">垂直地面 <span class="deg">60°</span></button>
+      </div>
+      <div class="field-row" style="grid-template-columns:1fr auto; margin-top:6px">
+        <input type="number" id="inRot" value="60" min="0" max="180" step="5"
+               title="自定义角度 0~180°（0 = 平行地面，60 = 垂直地面）"
+               aria-label="自定义旋转角度 0~180 度，0 度平行地面，60 度垂直地面">
+        <button id="btnRotSet" disabled>旋转</button>
+      </div>
+
+      <div class="section-label">实时状态</div>
+
+      <div class="status-grid">
+        <div class="stat wide">
+          <div class="k">目标坐标（单片机回报）</div>
+          <div class="v" id="stPos">—</div>
+        </div>
+        <div class="stat"><div class="k">底座 B</div><div class="v" id="stB">—</div></div>
+        <div class="stat"><div class="k">肩 S</div><div class="v" id="stS">—</div></div>
+        <div class="stat"><div class="k">肘 E</div><div class="v" id="stE">—</div></div>
+        <div class="stat"><div class="k">腕 W</div><div class="v" id="stW">—</div></div>
+        <div class="stat"><div class="k">夹爪 G</div><div class="v" id="stG">—</div></div>
+        <div class="stat"><div class="k">旋转 R</div><div class="v" id="stR">—</div></div>
+      </div>
+
+      <div class="toolbar" style="margin-top:10px">
+        <label class="chk"><input type="checkbox" id="pollOn" checked> 定时轮询（500ms）</label>
+      </div>
+
+      <div class="section-label">示教 / 回放</div>
+      <div class="field-row" style="grid-template-columns:1fr auto">
+        <input type="number" id="inPtDwell" value="500" min="0" max="60000" step="100"
+               title="记录点到位后停留多久（毫秒）"
+               aria-label="示教点停留时间，毫秒">
+        <button id="btnPtTeach" class="primary" disabled title="发送 T，把当前 6 个关节角记成一个点">记录</button>
+      </div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr 1fr 1fr; margin-top:6px">
+        <button id="btnPtPlayOnce" disabled
+                title="发送 P 1：从头跑一遍就自动停。回放期间发 M 会被拒，所以先试放再上循环">试放</button>
+        <button id="btnPtPlay" disabled
+                title="发送 P：无限循环，只有「停止」或断电才停">循环</button>
+        <button id="btnPtStop" disabled title="发送 X，停在当前姿态，不回原位">停止</button>
+        <button id="btnPtList" disabled title="发送 L，重新读取点表">刷新</button>
+      </div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr; margin-top:6px">
+        <button id="btnPtSave" disabled title="发送 W，写进 Flash，掉电不丢">存 Flash</button>
+        <button id="btnPtPush" disabled
+                title="把网页里这份点表逐条发 A 写回单片机 RAM。断联/断电后用：设备点表空了，这里还有">推回单片机</button>
+      </div>
+      <div class="field-row" style="grid-template-columns:1fr 1fr 1fr; margin-top:6px">
+        <button id="btnPtClear" disabled title="发送 C，只清 RAM 不擦 Flash">清空</button>
+        <button id="btnPtExport" title="把当前点表存成 JSON 文件，换电脑也能带走">导出</button>
+        <button id="btnPtImport" title="从 JSON 文件载入点表。只进网页缓存，要回放再点「推回」">导入</button>
+      </div>
+      <input type="file" id="filePtImport" accept=".json,application/json" style="display:none">
+      <div class="hint" id="ptHint">记的是关节角，不是坐标。回放不做逆解，不受工作空间限制。</div>
+      <div class="plist" id="ptList"></div>
+    </div>
+  </section>
+
+  <!-- ================= 中：机械臂姿态 ================= -->
+  <section class="panel">
+    <div class="panel-head">
+      <h2>机械臂姿态</h2>
+      <div class="toolbar">
+        <div class="seg" role="group" aria-label="视图模式">
+          <button id="btnView2D" class="on" title="侧视剖面：看 r–y 平面，带工作空间底图">2D</button>
+          <button id="btnView3D" title="立体视图：拖拽旋转、滚轮缩放、点击平面取点">3D</button>
+        </div>
+        <label class="chk"><input type="checkbox" id="optWS" checked> 工作空间</label>
+      </div>
+    </div>
+
+    <div class="view-wrap">
+      <canvas id="armCanvas"></canvas>
+      <div class="top-wrap">
+        <canvas id="topCanvas"></canvas>
+        <span>俯视 x–z</span>
+      </div>
+      <div class="view-hint" id="viewHint">拖拽旋转 · 滚轮缩放 · 单击平面取 x/z（按住 Shift 直接发送）· 双击复位</div>
+    </div>
+
+    <div class="view-foot">
+      <span>末端 <b id="vTip">—</b></span>
+      <span>姿态 α <b id="vAlpha">—</b></span>
+      <span>与目标偏差 <b id="vErr">—</b></span>
+    </div>
+  </section>
+
+  <!-- ================= 右：串口控制台 ================= -->
+  <section class="panel panel-log">
+    <div class="panel-head">
+      <h2>串口日志</h2>
+      <div class="toolbar">
+        <label class="chk"><input type="checkbox" id="optTime" checked> 时间戳</label>
+        <label class="chk"><input type="checkbox" id="optHex"> HEX 显示</label>
+        <label class="chk"><input type="checkbox" id="optAuto" checked> 自动滚动</label>
+        <label class="chk"><input type="checkbox" id="optShowS"> 显示 S 行</label>
+        <button id="btnClear">清空</button>
+      </div>
+    </div>
+
+    <div id="log"></div>
+
+    <div class="send-bar">
+      <input type="text" id="manual" placeholder="手动发送，回车即发（支持 M 0.3 0.1 0 / ? 等）" disabled>
+      <label class="chk"><input type="checkbox" id="optCRLF" checked> 追加 \r\n</label>
+      <label class="chk"><input type="checkbox" id="optHexSend"> HEX</label>
+      <button id="btnManual" class="primary" disabled>发送</button>
+    </div>
+  </section>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ============ 元素 ============ */
+  const $ = (id) => document.getElementById(id);
+  const elBaud = $("baud"), elBtnConn = $("btnConn"), elDot = $("dot"), elConnState = $("connState");
+  const elX = $("inX"), elY = $("inY"), elZ = $("inZ"), elUnit = $("unit");
+  const elBtnSend = $("btnSend"), elBtnSync = $("btnSync"), elPreview = $("cmdPreview");
+  const elBtnGripOpen = $("btnGripOpen"), elBtnGripClose = $("btnGripClose");
+  const elBtnRotHoriz = $("btnRotHoriz"), elBtnRotVert = $("btnRotVert");
+  const elBtnRotSet = $("btnRotSet"), elInRot = $("inRot");
+  const elBtnYawNeg = $("btnYawNeg"), elBtnYawPos = $("btnYawPos"), elBtnYawZero = $("btnYawZero");
+  const elInYawStep = $("inYawStep"), elYawHint = $("yawHint");
+  const elPill = $("resultPill");
+  const elStPos = $("stPos"), elStB = $("stB"), elStS = $("stS"), elStE = $("stE"), elStW = $("stW");
+  const elStG = $("stG"), elStR = $("stR");
+  const elPollOn = $("pollOn");
+  const elLog = $("log"), elManual = $("manual"), elBtnManual = $("btnManual");
+  const elOptTime = $("optTime"), elOptHex = $("optHex"), elOptAuto = $("optAuto"), elOptShowS = $("optShowS");
+  const elOptCRLF = $("optCRLF"), elOptHexSend = $("optHexSend");
+  const elBtnClear = $("btnClear"), elBanner = $("banner");
+  const elOptWS = $("optWS"), elArmCanvas = $("armCanvas"), elTopCanvas = $("topCanvas");
+  const elView2D = $("btnView2D"), elView3D = $("btnView3D"), elViewHint = $("viewHint");
+  const elVTip = $("vTip"), elVAlpha = $("vAlpha"), elVErr = $("vErr");
+  const elInPtDwell = $("inPtDwell"), elBtnPtTeach = $("btnPtTeach");
+  const elBtnPtPlayOnce = $("btnPtPlayOnce");
+  const elBtnPtPlay = $("btnPtPlay"), elBtnPtStop = $("btnPtStop"), elBtnPtList = $("btnPtList");
+  const elBtnPtSave = $("btnPtSave"), elBtnPtClear = $("btnPtClear");
+  const elPtList = $("ptList"), elPtHint = $("ptHint");
+  const elBtnPtPush = $("btnPtPush"), elBtnPtExport = $("btnPtExport"),
+        elBtnPtImport = $("btnPtImport"), elFilePtImport = $("filePtImport");
+
+  /* ============ 标定常量（改标定只动这里） ============ */
+  /* 夹爪旋转（PA6）实测标定：
+   *   0°  = 夹爪平行于地面（上电初始姿态）
+   *   60° = 夹爪垂直于地面   ← 实测值，不是几何推论的 90°
+   * 中间角度按线性过渡理解。若以后重新标定，改这两个数即可，
+   * 判定容差 ROT_TOL 会自动跟着走。 */
+  const ROT_HORIZ_DEG = 0;
+  const ROT_VERT_DEG = 60;
+  const ROT_TOL = 6;              /* ±6° 以内算「到位到该档」，用于高亮和文字标注 */
+
+  /* 关节标定：必须和固件 model.c 的 SERVO_ZERO_A1/A2/A3、SERVO_DIR_A1/A2/A3 一致。
+   * 网页正解用它们把「安装角」还原成「几何角」，不一致的话视图会画偏。
+   *   肩 DIR=-1 → th1 = z1 - a1
+   *   肘 DIR=+1 → th2 = a2 - z2   （z2 = 178，不是 180：实物偏高 2° 的补偿）
+   *   腕 DIR=-1 → th3 = z3 - a3 */
+  const CAL = { z1: 180, z2: 178, z3: 90 };
+
+  /* 底座偏航的物理标定：必须和固件 model.h 的 SERVO_ZERO_W / SERVO_DIR_W 一致。
+   *   waist = zero + dir · yaw        （固件下发用）
+   *   yaw   = (waist − zero) / dir    （本页正解 + 偏航按钮基准用）
+   * 实物底座「安装角增大 → 往 −z 转」，与模型约定的 +z 相反，故 dir = -1。
+   * 这里写死方向和固件不一致的话，3D 图会和实物镜像 —— 改固件时记得同步这个数。 */
+  const WAIST = { zero: 90, dir: -1 };
+  const waistToYaw = (w) => (w - WAIST.zero) / WAIST.dir;
+
+  /* ============ 状态 ============ */
+  let port = null, reader = null, writer = null, connected = false;
+  let readLoopPromise = null;     /* 关串口前必须等它退干净，否则 close() 会报端口仍被锁 */
+  let rxBuf = "";                 /* 未凑满一行的残留文本 */
+  let pollTimer = null;
+  let writeChain = Promise.resolve();
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const encoder = new TextEncoder();
+  const history = [];             /* 手动发送历史 */
+  let histIdx = -1;
+  let lastTarget = null;          /* 单片机回报的目标 {x,y,z} 单位米 */
+  let errLock = false;            /* 报错后锁住状态灯，别被下一次轮询冲掉 */
+
+  /* 偏航角（度）。固件不单独回报它，用底座安装角反算：yaw = waistToYaw(底座)。
+   * 注意不是简单的「底座 − 90」—— 底座舵机的转向和模型约定相反，
+   * 差值要再除以 WAIST.dir（= -1）。
+   * 发送时先本地累加（乐观更新），否则 500ms 轮询间隔里连点两下，
+   * 第二次读到的还是旧角度，两条命令会指向同一个目标，只转一次。 */
+  const YAW_LIMIT = 88;           /* 与固件 MOTION_YAW_LIMIT 保持一致 */
+  let lastYaw = 0;
+
+  /* 示教点表：这份是【镜像 + 缓存】。
+   *   - 连上设备后由 L 回报重建（playSource = "dev"）
+   *   - 断联时【不清空】。断联多半是 USB 拔掉，板子跟着断电，RAM 里的点表
+   *     已经没了 —— 网页这份就是唯一副本，清掉就真丢了（playSource = "cache"）
+   *   - 同时写一份进 localStorage，刷新/关标签页也还在
+   * wantList 表示「下一条 OK 之后要重新拉列表」——
+   * T/D/C/W 都回 "OK <点数>"，靠它区分是哪条命令引起的。 */
+  const PT_STORE_KEY = "roboarm.points.v1";   /* 改结构时改版本号，别让旧数据把新代码噎住 */
+  let playPoints = loadCachedPoints();
+  let playSource = playPoints.length ? "cache" : "dev";   /* "dev" = 设备镜像， "cache" = 网页缓存 */
+  let playState = { active: false, idx: 0, total: 0 };
+  let wantList = false;
+  let listBuf = [];                /* L 回报的临时缓冲，收到 L END 才提交 */
+  let ptSig = "";                  /* 上一次落盘的签名，避免回放时每帧都写 localStorage */
+
+  /* ============ 日志 ============ */
+  function stamp() {
+    const d = new Date();
+    const p = (n, w = 2) => String(n).padStart(w, "0");
+    return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()) + "." + p(d.getMilliseconds(), 3);
+  }
+
+  function appendRow(kind, text) {
+    const row = document.createElement("div");
+    row.className = "log-row " + kind;
+
+    if (elOptTime.checked) {
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent = stamp();
+      row.appendChild(t);
+    }
+
+    if (kind === "rx" || kind === "tx" || kind === "err") {
+      const d = document.createElement("span");
+      d.className = "d";
+      d.textContent = kind === "rx" ? "RX" : kind === "tx" ? "TX" : "!!";
+      row.appendChild(d);
+    }
+
+    const body = document.createElement("span");
+    body.textContent = text;
+    row.appendChild(body);
+
+    /* 贴底才自动滚动，用户翻历史时不要把他拽回去 */
+    const nearBottom = elLog.scrollTop + elLog.clientHeight >= elLog.scrollHeight - 24;
+
+    elLog.appendChild(row);
+    while (elLog.childElementCount > 3000) {
+      elLog.removeChild(elLog.firstElementChild);
+    }
+    if (elOptAuto.checked && nearBottom) {
+      elLog.scrollTop = elLog.scrollHeight;
+    }
+  }
+
+  const logSys = (msg) => appendRow("sys", msg);
+  const logErr = (msg) => appendRow("err", msg);
+
+  function toHex(str) {
+    return Array.from(encoder.encode(str))
+      .map((b) => b.toString(16).padStart(2, "0").toUpperCase())
+      .join(" ");
+  }
+
+  /* ============ 串口 ============ */
+  async function connect() {
+    if (!("serial" in navigator)) {
+      elBanner.classList.add("show");
+      return;
+    }
+    try {
+      port = await navigator.serial.requestPort();
+      await port.open({
+        baudRate: Number(elBaud.value),
+        dataBits: 8,
+        stopBits: 1,
+        parity: "none",
+        flowControl: "none",
+      });
+      connected = true;
+      writer = port.writable.getWriter();
+      updateConnUI();
+      logSys("已连接，波特率 " + elBaud.value);
+      readLoopPromise = readLoop();
+      restartPolling();
+    } catch (e) {
+      logErr("打开串口失败：" + (e && e.message ? e.message : e));
+      port = null;
+      connected = false;
+      updateConnUI();
+    }
+  }
+
+  async function disconnect() {
+    stopPolling();
+    connected = false;
+
+    /* 顺序不能换：先 cancel 让 read() 立刻返回，再等读循环自己 releaseLock，
+     * 最后才能 releaseLock(writer) 和 close()。反过来做 port.close() 会抛
+     * 「端口仍被锁」而留下一个半开状态。 */
+    try { if (reader) { await reader.cancel(); } } catch (e) { /* 已经停了 */ }
+    try { if (readLoopPromise) { await readLoopPromise; } } catch (e) { /* 忽略 */ }
+    readLoopPromise = null;
+    reader = null;
+
+    try { if (writer) { writer.releaseLock(); } } catch (e) { /* 忽略 */ }
+    writer = null;
+
+    try { if (port) { await port.close(); } } catch (e) { /* 忽略 */ }
+    port = null;
+
+    updateConnUI();
+    logSys("已断开");
+  }
+
+  async function readLoop() {
+    const p = port;
+    reader = p.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) { break; }
+        if (value && value.length) { onBytes(value); }
+      }
+    } catch (e) {
+      if (connected) { logErr("读取中断：" + (e && e.message ? e.message : e)); }
+    } finally {
+      try { reader.releaseLock(); } catch (e) { /* 忽略 */ }
+      /* 非主动断开（拔线 / 串口异常）时把界面复位 */
+      if (port && connected) { disconnect(); }
+    }
+  }
+
+  function onBytes(bytes) {
+    rxBuf += decoder.decode(bytes, { stream: true });
+
+    const parts = rxBuf.split("\n");
+    rxBuf = parts.pop();                       /* 最后一段可能还没收完，留着 */
+    for (const raw of parts) {
+      const line = raw.replace(/\r/g, "");
+      if (line.length === 0) { continue; }
+      onLine(line);
+      notifyAck(line.trim());               /* 推回的应答在这里被接走 */
+    }
+  }
+
+  function onLine(line) {
+    const s = line.trim();
+    if (s.length === 0) { return; }
+
+    /* S 状态行默认不写日志，避免 500ms 一条把日志刷满 */
+    const isStatus = s.charAt(0) === "S" && s.length > 2 && /^S\s+[-0-9]/.test(s);
+    if (!isStatus || elOptShowS.checked) {
+      appendRow("rx", elOptHex.checked ? toHex(line) : line);
+    }
+
+    if (isStatus) { parseStatus(s); return; }
+
+    /* ---- 示教 / 回放 ---- */
+
+    /* 整轮结束。必须先判这个，否则 "L END 5" 会被下面的数值模式当成一个点 */
+    if (/^L\s+END\b/i.test(s)) {
+      const n = Number((s.match(/\d+/) || [0])[0]);
+      const got = listBuf;
+      listBuf = [];
+      playState = { active: false, idx: 0, total: n };
+
+      if (got.length > 0) {
+        /* 正常情况：设备有点表，以设备为准 */
+        playPoints = got;
+        playSource = "dev";
+      } else if (playPoints.length === 0) {
+        playSource = "dev";                /* 两边都空 */
+      } else if (n > 0) {
+        /* 设备说有点（n>0）却一条 L 都没读到：多半是传输丢了行，
+         * 这时候保留旧表比清空安全 —— 清空是不可逆的。 */
+        playSource = "cache";
+      } else {
+        /* n === 0：设备点表确实是空的（断联断电 / 主动清空）。
+         * 保留网页缓存并标成 cache，让用户决定是推回还是丢掉。 */
+        playSource = "cache";
+      }
+      renderPoints();
+      return;
+    }
+    /* 单个点：L <序号> <6 个角> <停留> */
+    if (/^L\s+\d+/i.test(s)) {
+      const p = s.trim().split(/\s+/);
+      if (p.length >= 9) {
+        listBuf.push({
+          i: Number(p[1]),
+          a: p.slice(2, 8).map(Number),
+          dwell: Number(p[8]),
+        });
+      }
+      return;
+    }
+    /* 回放进度：PLAY <序号>/<总数> */
+    {
+      const m = /^PLAY\s+(\d+)\s*\/\s*(\d+)$/i.exec(s);
+      if (m) {
+        playState = { active: true, idx: Number(m[1]), total: Number(m[2]) };
+        setPill("wait", "回放 " + m[1] + "/" + m[2]);
+        renderPoints();
+        return;
+      }
+    }
+    if (/^PLAY\s+END$/i.test(s)) {
+      playState = { active: false, idx: 0, total: playState.total };
+      setPill("ok", "回放结束");
+      renderPoints();
+      return;
+    }
+
+    if (s === "OK") { setPill("ok", "已受理"); return; }
+
+    /* T / D / C / W / P 都回 "OK <点数>"。只有前四个改了点表，
+     * 靠 wantList 区分要不要重拉 —— P 的 OK 也走这里，但它不改点表。 */
+    {
+      const m = /^OK\s+(\d+)$/.exec(s);
+      if (m) {
+        setPill("ok", "共 " + m[1] + " 个点");
+        if (wantList) { wantList = false; requestList(); }
+        return;
+      }
+    }
+
+    if (s === "DONE") { setPill("ok", "已到位"); return; }
+    if (s.indexOf("ERR:") === 0) {
+      /* 锁住状态灯：否则 500ms 后的轮询会把错误冲成「已到位」，
+       * 用户根本来不及看清到底是被哪种错误拒的 */
+      errLock = true;
+      setPill("err", errText(s.slice(4)));
+      return;
+    }
+  }
+
+  const ERR_TEXT = {
+    CMD: "无法识别的命令",
+    ARG: "参数格式错误",
+    RANGE: "坐标超范围（检查是否把毫米当米发）",
+    OUT: "目标超出工作空间",
+    PATH: "直线路径中途穿出工作空间",
+    NOTIMPL: "该功能尚未实现（夹爪）",
+    LONG: "命令行过长，已丢弃",
+  };
+  function errText(code) {
+    return ERR_TEXT[code] || ("错误 " + code);
+  }
+
+  function parseStatus(s) {
+    const p = s.split(/\s+/);
+    if (p.length < 11) { return; }         /* S + 9 个值 + busy = 11 段 */
+    const mm = (v) => (Number(v) / 1000);
+
+    const x = mm(p[1]), y = mm(p[2]), z = mm(p[3]);
+    lastTarget = { x, y, z };
+    elStPos.textContent = x.toFixed(3) + " , " + y.toFixed(3) + " , " + z.toFixed(3) + "  m";
+
+    elStB.textContent = p[4] + "°";
+    elStS.textContent = p[5] + "°";
+    elStE.textContent = p[6] + "°";
+    elStW.textContent = p[7] + "°";
+
+    /* 底座安装角 → 偏航角，走和固件同一对标定常量（见上面 WAIST）。
+     * 运动中回报的是 NewAngle，也就是目标偏航角，所以这里顺带把
+     * 本地乐观值校正回真实值：被固件拒掉的命令（ERR:OUT）会在这里纠正。 */
+    const b = Number(p[4]);
+    if (Number.isFinite(b)) {
+      lastYaw = waistToYaw(b);
+      elYawHint.textContent = "当前偏航 " + (lastYaw > 0 ? "+" : "") + lastYaw.toFixed(0) +
+                              "°　·　只转底座，肩/肘/腕不动";
+    }
+
+    /* 夹爪：0° 是张开。闭合角由固件的 GRIP_ANGLE_CLOSE 决定（默认 60），
+     * 所以这里不写死 60，只按「接近 0 就算张开」来判断。 */
+    const g = Number(p[8]);
+    const isOpen = g <= 5;
+    elStG.textContent = g + "°" + (isOpen ? " 张开" : " 收紧");
+
+    /* 按钮跟着实际状态高亮：高亮的那个就是夹爪现在的位置。
+     * 注意这只是「固件认为它在哪」，不代表真的夹住了东西。 */
+    elBtnGripOpen.classList.toggle("active", isOpen);
+    elBtnGripClose.classList.toggle("active", !isOpen);
+
+    /* 旋转角（PA6）：0° 平行地面，60° 垂直地面（实测标定，见文件顶部常量）。
+     * 只做「接近哪个档」的标注，中间角度就只显示数值。 */
+    const r = Number(p[9]);
+    const nearHoriz = Math.abs(r - ROT_HORIZ_DEG) <= ROT_TOL;
+    const nearVert = Math.abs(r - ROT_VERT_DEG) <= ROT_TOL;
+    let rText = r + "°";
+    if (nearHoriz) { rText += " 平行"; }
+    else if (nearVert) { rText += " 垂直"; }
+    elStR.textContent = rText;
+
+    elBtnRotHoriz.classList.toggle("active", nearHoriz);
+    elBtnRotVert.classList.toggle("active", nearVert);
+
+    /* 用回报的「实际安装角」做正解来驱动姿态视图，而不是用目标坐标反算——
+     * 这样图上显示的是解算真正落到哪儿，和目标点之间的差就是 IK 误差。 */
+    pose = forwardKinematics(Number(p[4]), Number(p[5]), Number(p[6]), Number(p[7]));
+    refreshView();
+
+    /* 回放期间不要用轮询结果覆盖状态灯：S 行的 busy 只反映 Motion 是否在动，
+     * 回放走的是另一条路径，它永远是 0。不挡住的话 500ms 后
+     * "回放 3/8" 会被刷成"已到位"，看起来像回放没跑起来。 */
+    if (errLock || playState.active) { return; }
+    if (p[10] === "1") {
+      setPill("wait", "运动中");
+    } else {
+      setPill("ok", "已到位");
+    }
+  }
+
+  /* ============ 发送 ============ */
+  function sendRaw(bytes, logText) {
+    writeChain = writeChain.then(async () => {
+      if (!writer) { throw new Error("串口未打开"); }
+      await writer.write(bytes);
+      if (logText !== null) { appendRow("tx", elOptHex.checked ? toHex(logText) : logText); }
+    }).catch((e) => {
+      logErr("发送失败：" + (e && e.message ? e.message : e));
+    });
+    return writeChain;
+  }
+
+  function sendText(text) {
+    return sendRaw(encoder.encode(text), text.replace(/\r?\n$/, ""));
+  }
+
+  /* 轮询：静默发送，不写 TX 日志 */
+  function sendSilent(text) {
+    return sendRaw(encoder.encode(text), null);
+  }
+
+  function hexToBytes(str) {
+    const clean = str.replace(/[^0-9a-fA-F]/g, "");
+    if (clean.length === 0 || clean.length % 2 !== 0) { return null; }
+    const out = new Uint8Array(clean.length / 2);
+    for (let i = 0; i < out.length; i++) {
+      out[i] = parseInt(clean.substr(i * 2, 2), 16);
+    }
+    return out;
+  }
+
+  /* ============ 机械臂姿态视图 ============ */
+  /* 连杆长度，与 Servo_motor.c 的 mech_length 保持一致（米）：
+   *   l0 底座立柱 / l1 肩→肘 / l2 肘→腕 / l3 腕→末端 */
+  const LINK = { l0: 0.08, l1: 0.10, l2: 0.09, l3: 0.17 };
+  const D2R = Math.PI / 180;
+
+  /* 侧视图的固定坐标范围（米）。r = 水平距离，y = 离地高度。
+   * 用固定范围而不是自动缩放，是为了让姿态变化时画面不跟着抖。 */
+  const R_MIN = -0.10, R_MAX = 0.42, Y_MIN = -0.03, Y_MAX = 0.46;
+
+  let pose = null;        /* 由 ? 回报的舵机角换算出的真实姿态 */
+  let wsCache = null;     /* 工作空间底图，只在画布尺寸变化时重算 */
+
+  /* ---------- 视图模式与 3D 相机 ---------- */
+  let viewMode = "2d";
+  const CAM_HOME = { yaw: -0.62, pitch: 0.80, dist: 1.02 };
+  let cam = { yaw: CAM_HOME.yaw, pitch: CAM_HOME.pitch, dist: CAM_HOME.dist };
+  let camDrag = null;     /* {x,y,ox,oy,moved} 拖拽状态；moved=false 才算「单击」 */
+  let pickPt = null;      /* 平面点选结果 {x,y,z}，画在地面上做参照 */
+
+  /**
+   * 正解：舵机安装角 → 各关节位置（米）
+   * 严格按 model.c 的标定反推，方向反了整个图就是镜像的：
+   *   a1 = 180 + (−1)·th1  →  th1 = 180 − a1
+   *   a2 = 180 + (+1)·th2  →  th2 = a2 − 180
+   *   a3 = 90  + (−1)·th3  →  th3 = 90 − a3
+   *   waist = zero + dir·yaw  →  yaw = (waist − zero) / dir
+   * elbow / wrist / tip 用 (r, h) 表示，h 是相对肩关节的高度，画图时再加 l0。
+   */
+  function forwardKinematics(waist, a1, a2, a3) {
+    const th1 = (CAL.z1 - a1) * D2R;
+    const th2 = (a2 - CAL.z2) * D2R;
+    const th3 = (CAL.z3 - a3) * D2R;
+    const alpha = th1 + th2 + th3;
+    const yaw = waistToYaw(waist) * D2R;
+
+    const elbow = { r: LINK.l1 * Math.cos(th1), h: LINK.l1 * Math.sin(th1) };
+    const wrist = {
+      r: elbow.r + LINK.l2 * Math.cos(th1 + th2),
+      h: elbow.h + LINK.l2 * Math.sin(th1 + th2),
+    };
+    const tip = {
+      r: wrist.r + LINK.l3 * Math.cos(alpha),
+      h: wrist.h + LINK.l3 * Math.sin(alpha),
+    };
+
+    return {
+      th1: th1, th2: th2, th3: th3, alpha: alpha, yaw: yaw,
+      elbow: elbow, wrist: wrist, tip: tip,
+      x: tip.r * Math.cos(yaw),
+      y: tip.h + LINK.l0,
+      z: tip.r * Math.sin(yaw),
+    };
+  }
+
+  /* 演示姿态：目标 (0.28, 0.10) 的解算结果 B90 S120 E72 W42，
+   * 只在未连接时占位，让界面不至于一片空白 */
+  const DEMO_POSE = forwardKinematics(90, 120, 72, 42);
+
+  /* 世界坐标 → 屏幕坐标的映射 */
+  function fitMap(W, H, pad) {
+    const s = Math.min((W - 2 * pad) / (R_MAX - R_MIN), (H - 2 * pad) / (Y_MAX - Y_MIN));
+    const ox = pad + (W - 2 * pad - (R_MAX - R_MIN) * s) / 2;
+    const oy = pad + (H - 2 * pad - (Y_MAX - Y_MIN) * s) / 2;
+    return {
+      s: s,
+      px: function (r) { return ox + (r - R_MIN) * s; },
+      py: function (y) { return H - oy - (y - Y_MIN) * s; },
+    };
+  }
+
+  /**
+   * 生成工作空间底图
+   * 枚举 (th1, th2) 的所有可行组合，再让 α 在 [−90°, 90°] 内自由取值——
+   * 这正是固件的可达性定义：α 是冗余自由度，取得到就算可达。
+   * 关节行程：a1∈[0,180] → th1∈[0,180]；a2∈[45,180] → th2∈[−133,2]；
+   * a3∈[0,180] → th3∈[−90,90]，用 α − th1 − th2 反查。
+   * 标定用上面的 CAL，和正解、和固件 model.c 共用同一组数。 */
+  function buildWorkspace(W, H, m) {
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(W));
+    c.height = Math.max(1, Math.round(H));
+    const g = c.getContext("2d");
+    const img = g.createImageData(c.width, c.height);
+    const d = img.data;
+
+    for (let a1 = 0; a1 <= 180; a1 += 3) {
+      const th1 = (CAL.z1 - a1) * D2R;
+      const c1 = Math.cos(th1), s1 = Math.sin(th1);
+
+      for (let a2 = 45; a2 <= 180; a2 += 3) {
+        const th2 = (a2 - CAL.z2) * D2R;
+        const wr = LINK.l1 * c1 + LINK.l2 * Math.cos(th1 + th2);
+        const wh = LINK.l1 * s1 + LINK.l2 * Math.sin(th1 + th2);
+
+        for (let ad = -90; ad <= 90; ad += 4) {
+          const th3 = ad * D2R - th1 - th2;
+          if (th3 < -Math.PI / 2 || th3 > Math.PI / 2) { continue; }
+
+          const tr = wr + LINK.l3 * Math.cos(ad * D2R);
+          const th = wh + LINK.l3 * Math.sin(ad * D2R);
+          const px = Math.round(m.px(tr));
+          const py = Math.round(m.py(th + LINK.l0));
+          if (px < 0 || py < 0 || px >= c.width || py >= c.height) { continue; }
+
+          const i = (py * c.width + px) * 4;
+          d[i] = 37; d[i + 1] = 99; d[i + 2] = 235;
+          d[i + 3] = Math.min(88, d[i + 3] + 6);
+        }
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return c;
+  }
+
+  function drawArm() {
+    const cv = elArmCanvas;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (W < 20 || H < 20) { return; }
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const bw = Math.round(W * dpr), bh = Math.round(H * dpr);
+    if (cv.width !== bw || cv.height !== bh) {
+      cv.width = bw;
+      cv.height = bh;
+      wsCache = null;
+    }
+
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const m = fitMap(W, H, 16);
+
+    /* 工作空间底图：一眼看出 ERR:OUT 是怎么来的 */
+    if (elOptWS.checked) {
+      if (wsCache === null) { wsCache = buildWorkspace(W, H, m); }
+      if (wsCache) {
+        ctx.save();
+        ctx.globalAlpha = 0.62;
+        ctx.drawImage(wsCache, 0, 0, W, H);
+        ctx.restore();
+      }
+    }
+
+    /* 地面 */
+    ctx.strokeStyle = "#cbd5e1";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(m.px(R_MIN), m.py(0));
+    ctx.lineTo(m.px(R_MAX), m.py(0));
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    /* 底座立柱 */
+    ctx.strokeStyle = "#94a3b8";
+    ctx.lineWidth = 9;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(m.px(0), m.py(0));
+    ctx.lineTo(m.px(0), m.py(LINK.l0));
+    ctx.stroke();
+
+    /* 没连板子时用一个演示姿态占位，方便先看渲染效果；
+     * 接上之后立刻被真实角度覆盖。用半透明画，避免被误当成真机状态。 */
+    const shown = pose || (connected ? null : DEMO_POSE);
+    if (!shown) {
+      ctx.fillStyle = "#9aa3ae";
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("等待单片机回报角度…", W / 2, H / 2);
+      ctx.textAlign = "start";
+      drawTopView();
+      return;
+    }
+
+    ctx.save();
+    if (!pose) { ctx.globalAlpha = 0.34; }
+
+    const P = (p) => [m.px(p.r), m.py(p.h + LINK.l0)];
+    const sh = [m.px(0), m.py(LINK.l0)];
+    const el = P(shown.elbow);
+    const wr = P(shown.wrist);
+    const tp = P(shown.tip);
+
+    /* 目标点：用回报的目标坐标，投影到当前朝向的剖面 (r, y) */
+    if (lastTarget) {
+      const rt = Math.hypot(lastTarget.x, lastTarget.z);
+      const tx = m.px(rt), ty = m.py(lastTarget.y);
+
+      ctx.strokeStyle = "#f59e0b";
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(tp[0], tp[1]);
+      ctx.lineTo(tx, ty);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.strokeStyle = "#dc2626";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(tx - 6, ty); ctx.lineTo(tx + 6, ty);
+      ctx.moveTo(tx, ty - 6); ctx.lineTo(tx, ty + 6);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(tx, ty, 8, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    /* 连杆：肩→肘→腕 用主色，腕→末端（工具段）浅一档 */
+    ctx.strokeStyle = "#334155";
+    ctx.lineWidth = 10;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    ctx.beginPath();
+    ctx.moveTo(sh[0], sh[1]);
+    ctx.lineTo(el[0], el[1]);
+    ctx.lineTo(wr[0], wr[1]);
+    ctx.stroke();
+
+    ctx.strokeStyle = "#64748b";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.moveTo(wr[0], wr[1]);
+    ctx.lineTo(tp[0], tp[1]);
+    ctx.stroke();
+
+    /* 夹爪两指：沿姿态角 α 方向伸出，能看出夹爪是水平还是斜的 */
+    const ux = Math.cos(shown.alpha), uy = -Math.sin(shown.alpha);
+    const vx = -uy, vy = ux;
+    const fl = 0.020 * m.s, gap = 0.0075 * m.s;
+
+    ctx.strokeStyle = "#0f172a";
+    ctx.lineWidth = 2.6;
+    for (const sgn of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(tp[0] + vx * gap * sgn, tp[1] + vy * gap * sgn);
+      ctx.lineTo(tp[0] + ux * fl + vx * gap * sgn, tp[1] + uy * fl + vy * gap * sgn);
+      ctx.stroke();
+    }
+
+    /* 关节 */
+    [[sh, 4.6], [el, 4.0], [wr, 4.0]].forEach(([p, r]) => {
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], r, 0, Math.PI * 2);
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.strokeStyle = "#2563eb";
+      ctx.lineWidth = 2.4;
+      ctx.stroke();
+    });
+
+    /* 末端 */
+    ctx.beginPath();
+    ctx.arc(tp[0], tp[1], 3.6, 0, Math.PI * 2);
+    ctx.fillStyle = "#ea580c";
+    ctx.fill();
+
+    ctx.restore();
+
+    if (!pose) {
+      ctx.fillStyle = "#9aa3ae";
+      ctx.font = "11.5px system-ui, sans-serif";
+      ctx.fillText("演示姿态（未连接）", 12, H - 10);
+    }
+
+    drawTopView();
+  }
+
+  /* 俯视图：看底座偏航到底转到哪了，侧视图看不出这个 */
+  function drawTopView() {
+    const cv = elTopCanvas;
+    const size = 96;
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    if (cv.width !== Math.round(size * dpr)) {
+      cv.width = Math.round(size * dpr);
+      cv.height = Math.round(size * dpr);
+    }
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, size, size);
+
+    const cx = size / 2, cy = size / 2;
+    const k = (size / 2 - 7) / 0.40;          /* 视野 ±0.40m */
+    const X = (v) => cx + v * k;
+    const Z = (v) => cy - v * k;              /* 屏幕上「向上」为 +z */
+
+    ctx.strokeStyle = "#e6eaf0";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(cx, cy, (LINK.l1 + LINK.l2 + LINK.l3) * k, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = "#f1f4f8";
+    ctx.beginPath();
+    ctx.moveTo(4, cy); ctx.lineTo(size - 4, cy);
+    ctx.moveTo(cx, 4); ctx.lineTo(cx, size - 4);
+    ctx.stroke();
+
+    if (pose) {
+      ctx.strokeStyle = "#94a3b8";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(X(pose.x), Z(pose.z));
+      ctx.stroke();
+
+      ctx.fillStyle = "#ea580c";
+      ctx.beginPath();
+      ctx.arc(X(pose.x), Z(pose.z), 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    if (lastTarget) {
+      ctx.strokeStyle = "#dc2626";
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.arc(X(lastTarget.x), Z(lastTarget.z), 4, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+
+    ctx.fillStyle = "#334155";
+    ctx.beginPath();
+    ctx.arc(cx, cy, 2.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  /* ============ 3D 视图 ============ */
+  /* 手写投影，不引 three.js：整页是单文件、要能离线双击打开，
+   * 为一张示意图拖进一个几百 KB 的库不划算。
+   * 实际只需要「绕 Y 偏航 + 抬高俯仰 + 透视除法」三件事，几十行就够。 */
+
+  /* 相机基向量：视点 T 固定，相机在球面上绕它转。
+   * f = 视线方向，r = 屏幕右，u = 屏幕上 */
+  function camBasis(W, H) {
+    const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+    const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+
+    /* 视点略高于地面：整机高度约 0.44m，取 0.16 大致居中，
+     * 否则俯视时机械臂全挤在画面下半。 */
+    const T = { x: 0, y: 0.16, z: 0 };
+    const pos = {
+      x: T.x + cam.dist * cp * sy,
+      y: T.y + cam.dist * sp,
+      z: T.z + cam.dist * cp * cy,
+    };
+
+    let f = { x: T.x - pos.x, y: T.y - pos.y, z: T.z - pos.z };
+    const fl = Math.hypot(f.x, f.y, f.z) || 1;
+    f = { x: f.x / fl, y: f.y / fl, z: f.z / fl };
+
+    /* 右 = f × (0,1,0) = (−f.z, 0, f.x)，再压到水平面内归一化 */
+    let r = { x: -f.z, y: 0, z: f.x };
+    const rl = Math.hypot(r.x, r.z) || 1;
+    r = { x: r.x / rl, y: 0, z: r.z / rl };
+
+    /* 上 = r × f */
+    const u = {
+      x: r.y * f.z - r.z * f.y,
+      y: r.z * f.x - r.x * f.z,
+      z: r.x * f.y - r.y * f.x,
+    };
+
+    /* 焦距 ≈ 1.5×短边：让 ±0.33m 的桌面刚好铺满；
+     * 画面中心上移 6%：桌面的近边在下方，下移会被画布裁掉，上移才留得住边距 */
+    return {
+      pos: pos, f: f, r: r, u: u,
+      focal: Math.min(W, H) * 1.5,
+      cx: W / 2, cy: H * 0.44,
+      W: W, H: H,
+    };
+  }
+
+  /* 世界点 → 屏幕。k = 该深度上「1 米占多少像素」，
+   * 线宽、圆半径都按 k 缩放，远近才有透视，不像贴纸。 */
+  function project(p, B) {
+    const dx = p.x - B.pos.x, dy = p.y - B.pos.y, dz = p.z - B.pos.z;
+    const d = dx * B.f.x + dy * B.f.y + dz * B.f.z;       /* 沿视线的深度，正值=在镜头前 */
+    const k = B.focal / Math.max(d, 0.05);
+    return {
+      X: B.cx + (dx * B.r.x + dy * B.r.y + dz * B.r.z) * k,
+      Y: B.cy - (dx * B.u.x + dy * B.u.y + dz * B.u.z) * k,
+      k: k,
+      d: d,
+      front: d > 0.05,
+    };
+  }
+
+  /* 屏幕点 → 世界射线，与水平面 y=planeY 求交。
+   * 射线朝天（dir.y≈0 或交点跑到身后）时返回 null，由调用方提示用户。 */
+  function pickOnPlane(px, py, planeY) {
+    const B = camBasis(elArmCanvas.clientWidth, elArmCanvas.clientHeight);
+    const nx = (px - B.cx) / B.focal;
+    const ny = -(py - B.cy) / B.focal;
+
+    /* 方向 = 前 + 右·nx + 上·ny（不归一化也能用：t 是同一个参数） */
+    const dir = {
+      x: B.r.x * nx + B.u.x * ny + B.f.x,
+      y: B.r.y * nx + B.u.y * ny + B.f.y,
+      z: B.r.z * nx + B.u.z * ny + B.f.z,
+    };
+    if (Math.abs(dir.y) < 1e-4) { return null; }
+
+    const t = (planeY - B.pos.y) / dir.y;
+    if (t <= 0) { return null; }
+    return { x: B.pos.x + dir.x * t, z: B.pos.z + dir.z * t };
+  }
+
+  function draw3D() {
+    const cv = elArmCanvas;
+    const W = cv.clientWidth, H = cv.clientHeight;
+    if (W < 20 || H < 20) { return; }
+
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const bw = Math.round(W * dpr), bh = Math.round(H * dpr);
+    if (cv.width !== bw || cv.height !== bh) {
+      cv.width = bw;
+      cv.height = bh;
+    }
+
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+
+    const B = camBasis(W, H);
+
+    /* 水平面上的圆（底座盘、末端投影）在透视下是椭圆，
+     * 直接按 24 点采样多边形，比手推椭圆参数稳。 */
+    function disc(cx, cz, rad, fill, stroke) {
+      ctx.beginPath();
+      for (let i = 0; i <= 28; i++) {
+        const a = (i / 28) * Math.PI * 2;
+        const q = project({ x: cx + rad * Math.cos(a), y: 0.0005, z: cz + rad * Math.sin(a) }, B);
+        if (i === 0) { ctx.moveTo(q.X, q.Y); } else { ctx.lineTo(q.X, q.Y); }
+      }
+      ctx.closePath();
+      if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+      if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
+    }
+
+    /* ---- 桌面：先铺一块半透明底板，网格才像「画在台面上」而不是浮在空中 ---- */
+    const G = 0.33, STEP = 0.05;
+    const quad = [
+      project({ x: -G, y: 0, z: -G }, B), project({ x: G, y: 0, z: -G }, B),
+      project({ x: G, y: 0, z: G }, B), project({ x: -G, y: 0, z: G }, B),
+    ];
+    ctx.beginPath();
+    ctx.moveTo(quad[0].X, quad[0].Y);
+    for (let i = 1; i < 4; i++) { ctx.lineTo(quad[i].X, quad[i].Y); }
+    ctx.closePath();
+    ctx.fillStyle = "#fafcfe";
+    ctx.fill();
+    ctx.strokeStyle = "#dde5f0";
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    /* ---- 地面网格 0.05m 一格 ---- */
+    ctx.lineWidth = 1;
+    for (let g = -G; g <= G + 1e-9; g += STEP) {
+      const axis = Math.abs(g) < 1e-9;
+      ctx.strokeStyle = axis ? "#cbd5e1" : "#e8eef7";
+      let p = project({ x: g, y: 0, z: -G }, B), q = project({ x: g, y: 0, z: G }, B);
+      ctx.beginPath(); ctx.moveTo(p.X, p.Y); ctx.lineTo(q.X, q.Y); ctx.stroke();
+      p = project({ x: -G, y: 0, z: g }, B); q = project({ x: G, y: 0, z: g }, B);
+      ctx.beginPath(); ctx.moveTo(p.X, p.Y); ctx.lineTo(q.X, q.Y); ctx.stroke();
+    }
+
+    /* 坐标轴标注：3D 里最容易迷路的就是「哪边是 x 哪边是 z」 */
+    ctx.font = "10px system-ui, sans-serif";
+    ctx.fillStyle = "#b6c0cd";
+    [[0.36, 0, 0, "x"], [0, 0, 0.36, "z"], [0, 0.46, 0, "y"]].forEach(([x, y, z, t]) => {
+      const q = project({ x: x, y: y, z: z }, B);
+      if (q.front) { ctx.fillText(t, q.X + 3, q.Y + 4); }
+    });
+
+    disc(0, 0, 0.045, "#eef2f7", "#dde4ee");   /* 底座盘 */
+
+    const shown = pose || (connected ? null : DEMO_POSE);
+    if (!shown) {
+      ctx.fillStyle = "#9aa3ae";
+      ctx.font = "13px system-ui, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText("等待单片机回报角度…", W / 2, H / 2);
+      ctx.textAlign = "start";
+      drawTopView();
+      return;
+    }
+
+    /* 正解给的是剖面坐标 (r, h)，绕底座偏航 yaw 转到世界坐标 */
+    const yaw = shown.yaw;
+    const toW = (p) => ({
+      x: p.r * Math.cos(yaw),
+      y: p.h + LINK.l0,
+      z: p.r * Math.sin(yaw),
+    });
+    const shoulder = { x: 0, y: LINK.l0, z: 0 };
+    const elbow = toW(shown.elbow);
+    const wrist = toW(shown.wrist);
+    const tip = toW(shown.tip);
+
+    if (!pose) { ctx.globalAlpha = 0.55; }
+
+    /* 末端的地面投影：没有它几乎判断不出高度，尤其俯仰接近水平时 */
+    disc(tip.x, tip.z, 0.021, "rgba(148,163,184,.20)", null);
+    ctx.strokeStyle = "#cbd5e1";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 3]);
+    let g0 = project(tip, B), g1 = project({ x: tip.x, y: 0, z: tip.z }, B);
+    ctx.beginPath(); ctx.moveTo(g0.X, g0.Y); ctx.lineTo(g1.X, g1.Y); ctx.stroke();
+    ctx.setLineDash([]);
+
+    /* 指令目标点：和侧视图里那个红十字是同一个东西，只是换了视角 */
+    if (lastTarget) {
+      const tq = project(lastTarget, B);
+      ctx.strokeStyle = "#f59e0b";
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(g0.X, g0.Y); ctx.lineTo(tq.X, tq.Y); ctx.stroke();
+      ctx.setLineDash([]);
+
+      const rr = Math.max(4, Math.min(9, 0.007 * tq.k));
+      ctx.strokeStyle = "#dc2626";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(tq.X - rr, tq.Y); ctx.lineTo(tq.X + rr, tq.Y);
+      ctx.moveTo(tq.X, tq.Y - rr); ctx.lineTo(tq.X, tq.Y + rr);
+      ctx.stroke();
+      ctx.beginPath(); ctx.arc(tq.X, tq.Y, rr * 1.7, 0, Math.PI * 2); ctx.stroke();
+    }
+
+    /* 平面点选留下的记号：画在「取点那一层高度」上，并垂到地面 */
+    if (pickPt) {
+      const pq = project({ x: pickPt.x, y: pickPt.y, z: pickPt.z }, B);
+      const pg = project({ x: pickPt.x, y: 0, z: pickPt.z }, B);
+      const rr = Math.max(4, Math.min(10, 0.008 * pq.k));
+
+      ctx.strokeStyle = "#0ea5e9";
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath(); ctx.moveTo(pq.X, pq.Y); ctx.lineTo(pg.X, pg.Y); ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.beginPath(); ctx.arc(pq.X, pq.Y, rr, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.arc(pq.X, pq.Y, 1.8, 0, Math.PI * 2);
+      ctx.fillStyle = "#0ea5e9"; ctx.fill();
+    }
+
+    /* ---- 连杆：先按视深从远到近排序，近的盖住远的 ---- */
+    const items = [];
+    const push = (a, b, w, col) => {
+      const pa = project(a, B), pb = project(b, B);
+      if (!pa.front || !pb.front) { return; }
+      items.push({ a: pa, b: pb, w: w, col: col, d: (pa.d + pb.d) / 2 });
+    };
+
+    push({ x: 0, y: 0, z: 0 }, shoulder, 0.017, "#94a3b8");       /* 立柱，比连杆粗一档 */
+    push(shoulder, elbow, 0.014, "#334155");                       /* 大臂 */
+    push(elbow, wrist, 0.012, "#334155");                          /* 小臂 */
+    push(wrist, tip, 0.009, "#64748b");                            /* 工具段 */
+
+    /* 夹爪两指：α 是剖面内的姿态角，转到世界坐标要跟着 yaw 一起转 */
+    const ca = Math.cos(shown.alpha), sa = Math.sin(shown.alpha);
+    const dTip = { x: ca * Math.cos(yaw), y: sa, z: ca * Math.sin(yaw) };
+    const dPerp = { x: -sa * Math.cos(yaw), y: ca, z: -sa * Math.sin(yaw) };
+    for (const sgn of [-1, 1]) {
+      const bx = tip.x + dPerp.x * 0.0075 * sgn;
+      const by = tip.y + dPerp.y * 0.0075 * sgn;
+      const bz = tip.z + dPerp.z * 0.0075 * sgn;
+      push({ x: bx, y: by, z: bz },
+           { x: bx + dTip.x * 0.020, y: by + dTip.y * 0.020, z: bz + dTip.z * 0.020 },
+           0.004, "#0f172a");
+    }
+
+    items.sort((p, q) => q.d - p.d);
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (const it of items) {
+      ctx.strokeStyle = it.col;
+      ctx.lineWidth = Math.max(2.2, Math.min(16, it.w * Math.min(it.a.k, it.b.k)));
+      ctx.beginPath();
+      ctx.moveTo(it.a.X, it.a.Y);
+      ctx.lineTo(it.b.X, it.b.Y);
+      ctx.stroke();
+    }
+
+    /* 关节球：白底蓝边，和 2D 视图保持同一套视觉语言 */
+    [[shoulder, 0.0095], [elbow, 0.0085], [wrist, 0.0085]].forEach(([p, rad]) => {
+      const q = project(p, B);
+      if (!q.front) { return; }
+      const rr = Math.max(2.5, Math.min(11, rad * q.k));
+      ctx.beginPath(); ctx.arc(q.X, q.Y, rr, 0, Math.PI * 2);
+      ctx.fillStyle = "#ffffff"; ctx.fill();
+      ctx.strokeStyle = "#2563eb"; ctx.lineWidth = 2; ctx.stroke();
+    });
+
+    const qt = project(tip, B);
+    if (qt.front) {
+      ctx.beginPath();
+      ctx.arc(qt.X, qt.Y, Math.max(2, Math.min(5, 0.004 * qt.k)), 0, Math.PI * 2);
+      ctx.fillStyle = "#ea580c"; ctx.fill();
+    }
+
+    ctx.globalAlpha = 1;
+
+    if (!pose) {
+      ctx.fillStyle = "#9aa3ae";
+      ctx.font = "11.5px system-ui, sans-serif";
+      ctx.fillText("演示姿态（未连接）", 12, 20);
+    }
+
+    drawTopView();
+  }
+
+  /* 重画视图并刷新底部读数 */
+  function refreshView() {
+    if (viewMode === "3d") { draw3D(); } else { drawArm(); }
+
+    if (!pose) {
+      elVTip.textContent = "—";
+      elVAlpha.textContent = "—";
+      elVErr.textContent = "—";
+      return;
+    }
+
+    elVTip.textContent = pose.x.toFixed(3) + ", " + pose.y.toFixed(3) + ", " + pose.z.toFixed(3) + " m";
+    elVAlpha.textContent = (pose.alpha / D2R).toFixed(1) + "°";
+
+    if (lastTarget) {
+      const d = Math.hypot(pose.x - lastTarget.x, pose.y - lastTarget.y, pose.z - lastTarget.z);
+      elVErr.textContent = (d * 1000).toFixed(1) + " mm";
+    } else {
+      elVErr.textContent = "—";
+    }
+  }
+
+  /* ============ 轮询 ============ */
+  function restartPolling() {
+    stopPolling();
+    if (!connected || !elPollOn.checked) { return; }
+    pollTimer = setInterval(() => {
+      if (connected) { sendSilent("?\r\n"); }
+    }, 500);
+  }
+  function stopPolling() {
+    if (pollTimer !== null) { clearInterval(pollTimer); pollTimer = null; }
+  }
+
+  /* ============ 运动控制 ============ */
+  const unitScale = () => (elUnit.value === "mm" ? 0.001 : 1);
+
+  function readTargets() {
+    const k = unitScale();
+    return {
+      x: parseFloat(elX.value) * k,
+      y: parseFloat(elY.value) * k,
+      z: parseFloat(elZ.value) * k,
+    };
+  }
+
+  function buildCmd() {
+    const t = readTargets();
+    if (!isFinite(t.x) || !isFinite(t.y) || !isFinite(t.z)) { return null; }
+    return "M " + t.x.toFixed(4) + " " + t.y.toFixed(4) + " " + t.z.toFixed(4);
+  }
+
+  function refreshPreview() {
+    const c = buildCmd();
+    const txt = c === null ? "坐标必须是数字" : c;
+    /* 预览不再单独占一行（矮屏下太奢侈），改成按钮的悬停提示：
+     * 鼠标停在「发送 M 指令」上就能核对将要发出去的完整命令。 */
+    elPreview.textContent = txt;
+    elBtnSend.title = "将发送：" + txt;
+  }
+
+  function setPill(kind, text) {
+    elPill.className = "pill " + kind;
+    elPill.textContent = text;
+  }
+
+  async function sendMove() {
+    const cmd = buildCmd();
+    if (cmd === null) {
+      setPill("err", "坐标必须是数字");
+      return;
+    }
+    errLock = false;                       /* 新指令发出，解除上一次的错误锁 */
+    setPill("wait", "已发送，等待受理…");
+    await sendText(cmd + "\r\n");
+  }
+
+  /* ============ UI 同步 ============ */
+  function updateConnUI() {
+    elDot.className = "dot" + (connected ? " on" : "");
+    elConnState.textContent = connected ? ("已连接 " + elBaud.value) : "未连接";
+    elBtnConn.textContent = connected ? "断开" : "连接串口";
+    elBtnConn.classList.toggle("primary", !connected);
+    elBtnSend.disabled = !connected;
+    elBtnGripOpen.disabled = !connected;
+    elBtnGripClose.disabled = !connected;
+    elBtnRotHoriz.disabled = !connected;
+    elBtnRotVert.disabled = !connected;
+    elBtnRotSet.disabled = !connected;
+    elInRot.disabled = !connected;
+    elBtnYawNeg.disabled = !connected;
+    elBtnYawPos.disabled = !connected;
+    elBtnYawZero.disabled = !connected;
+    elInYawStep.disabled = !connected;
+    elBtnManual.disabled = !connected;
+    elManual.disabled = !connected;
+    elBaud.disabled = connected;
+
+    elBtnPtTeach.disabled = !connected;
+    elBtnPtPlayOnce.disabled = !connected;
+    elBtnPtPlay.disabled = !connected;
+    elBtnPtStop.disabled = !connected;
+    elBtnPtList.disabled = !connected;
+    elBtnPtSave.disabled = !connected;
+    elBtnPtClear.disabled = !connected;
+    elBtnPtPush.disabled = !connected;
+    elInPtDwell.disabled = !connected;
+
+    /* 连上就把点表读一次：里面可能躺着上次存进 Flash 的内容，
+     * 不读的话面板上永远是空的，用户会以为没存住。 */
+    if (connected) {
+      requestList();
+    } else {
+      playState = { active: false, idx: 0, total: 0 };
+      /* 【不清空点表】。断联多半是 USB 被拔，板子跟着断电，RAM 里的点表
+       * 已经没了；网页这份是唯一副本，清掉就真丢了。只把来源标成缓存，
+       * 让人一眼看出「这份不在设备上」。 */
+      if (playPoints.length > 0) { playSource = "cache"; }
+      renderPoints();
+    }
+
+    /* 断开后清掉夹爪/旋转高亮：那些状态来自上一次 ? 回报，已经不可信了 */
+    if (!connected) {
+      elBtnGripOpen.classList.remove("active");
+      elBtnGripClose.classList.remove("active");
+      elBtnRotHoriz.classList.remove("active");
+      elBtnRotVert.classList.remove("active");
+    }
+
+    /* 连接状态变了要重画：未连接时画演示姿态，连上后等真实角度 */
+    refreshView();
+  }
+
+  /* ============ 示教 / 回放 ============ */
+
+  /* ---- 网页侧缓存 ----
+   * 为什么需要：回放的执行者是单片机，点必须在它的 RAM 里；而断联（USB 拔掉）
+   * 就是断电，RAM 清空。所以在「重新示教」和「连电脑重推」之间，网页得留一份。
+   *
+   * 存 localStorage 而不是 IndexedDB：64 个点约 3KB，localStorage 的 5MB 绰绰有余，
+   * 而且同步读写、不用处理事务和回调。代价是同源限制 —— file:// 下各浏览器
+   * 行为不一致（Chrome 允许、部分版本按不透明源拒绝），所以读写都包了 try：
+   * 失败就退化成「只在内存里，刷新会丢」，不影响其他功能。 */
+  function loadCachedPoints() {
+    try {
+      const raw = localStorage.getItem(PT_STORE_KEY);
+      if (!raw) { return []; }
+      const o = JSON.parse(raw);
+      if (!o || !Array.isArray(o.points)) { return []; }
+      const out = [];
+      for (const p of o.points) {
+        if (!p || !Array.isArray(p.a) || p.a.length < 6) { continue; }
+        const a = p.a.slice(0, 6).map((v) => Math.max(0, Math.min(180, Math.round(Number(v)) || 0)));
+        out.push({ i: out.length + 1, a, dwell: Math.max(0, Math.min(60000, Math.round(Number(p.dwell)) || 0)) });
+        if (out.length >= 64) { break; }        /* 与固件 PLAY_MAX_POINTS 对齐 */
+      }
+      return out;
+    } catch (e) {
+      return [];                                /* 坏数据 / 隐私模式 / 配额满：当作没有 */
+    }
+  }
+
+  function saveCachedPoints() {
+    /* 回放时 renderPoints 每个点都会被调一次（进度高亮），没变化就不写盘 */
+    const sig = JSON.stringify(playPoints.map((p) => [p.a, p.dwell]));
+    if (sig === ptSig) { return; }
+    ptSig = sig;
+    try {
+      if (playPoints.length === 0) {
+        localStorage.removeItem(PT_STORE_KEY);   /* 空表就别留个空壳，省得下次以为有 */
+      } else {
+        localStorage.setItem(PT_STORE_KEY, JSON.stringify({
+          v: 1, savedAt: Date.now(),
+          points: playPoints.map((p) => ({ a: p.a, dwell: p.dwell })),
+        }));
+      }
+    } catch (e) {
+      /* 写不进去就只是「刷新会丢」，不打断操作 */
+    }
+  }
+
+  /* ---- 逐条命令的应答等待 ----
+   * 「推回」是一次性发几十条 A，而固件的接收环形缓冲只有 1024 字节
+   * （uart_app.h 的 UART_RX_BUF_SIZE）。64 条 × 约 25 字节约 1.6KB，
+   * 一口气倒进去必然溢出，中间的行被丢、点就少了 —— 而且不会有任何报错。
+   * 所以做成「发一条 → 等 OK → 再发下一条」，拿应答当节流阀。
+   * 同一个时刻只允许一个等待（推回是串行的，够用）。 */
+  let ackWait = null;
+  function notifyAck(line) {
+    if (!ackWait) { return; }
+    if (!/^(OK|ERR:)/.test(line)) { return; }
+    const w = ackWait;
+    ackWait = null;
+    clearTimeout(w.timer);
+    w.resolve({ ok: line.indexOf("ERR:") !== 0, line });
+  }
+  function waitAck(timeoutMs) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        if (ackWait) { ackWait = null; resolve({ ok: false, line: "TIMEOUT" }); }
+      }, timeoutMs || 1500);
+      ackWait = { resolve, timer };
+    });
+  }
+
+  /* 关节角一行展示。列宽固定 4 字符，等宽字体下 6 个数能对齐，
+   * 扫一眼就能看出哪两个点几乎一样 —— 示教时重复记点是常事。 */
+  function pointText(a) {
+    return a.map((v) => String(v).padStart(4, " ")).join("");
+  }
+
+  /* 回放期间「记录 / 试放 / 循环」都会被固件用 ERR:BUSY 拒掉
+   * （Play 和 Motion 抢同一批舵机）。提前禁用比让人点一下再吃一次错误清楚。
+   * 故意不禁「停止」：万一进度带回报丢了，它是唯一的人工出口。 */
+  function syncPlayButtons() {
+    const busy = !connected || playState.active;
+    elBtnPtTeach.disabled = busy;
+    elBtnPtPlayOnce.disabled = busy;
+    elBtnPtPlay.disabled = busy;
+    elBtnPtPush.disabled = busy;
+    /* 导出/导入不跟着禁用：断联时正好是最需要把缓存导出来的时刻 */
+  }
+
+  function renderPoints() {
+    elPtList.innerHTML = "";
+
+    for (const p of playPoints) {
+      const row = document.createElement("div");
+      row.className = "prow" + (playState.active && playState.idx === p.i ? " active" : "");
+
+      const pi = document.createElement("span");
+      pi.className = "pi";
+      pi.textContent = p.i;
+
+      const pa = document.createElement("span");
+      pa.className = "pa";
+      pa.textContent = pointText(p.a);
+      pa.title = "底座 肩 肘 腕 夹爪 旋转";
+
+      const pd = document.createElement("span");
+      pd.className = "pd";
+      pd.textContent = p.dwell + "ms";
+
+      const px = document.createElement("button");
+      px.className = "px";
+      px.textContent = "×";
+      px.title = "删除第 " + p.i + " 点（D " + p.i + "）";
+      px.addEventListener("click", () => deletePoint(p.i));
+
+      row.append(pi, pa, pd, px);
+      elPtList.appendChild(row);
+    }
+
+    if (playPoints.length === 0) {
+      elPtHint.textContent = "还没有示教点。摆好姿态后点「记录」。";
+    } else if (!playState.active) {
+      /* 来源要写清楚：断联/断电后设备点表是空的，眼前这份只是网页缓存的副本，
+       * 不推回去是放不了的。不说的话用户点「试放」会吃一个 ERR:EMPTY。 */
+      const src = playSource === "cache"
+        ? "· <b>网页缓存</b>（设备点表为空，先「推回」）"
+        : "· 来自设备";
+      elPtHint.innerHTML = playPoints.length + " 个点" +
+        (playPoints.length >= 64 ? "（已满，再记会被拒）" : "") +
+        " " + src + " · 试放只跑一遍，循环会一直重复";
+    }
+
+    saveCachedPoints();
+    syncPlayButtons();
+  }
+
+  /* 拉点表：不再先把 playPoints 清空。清空会让面板闪一下空白，
+   * 更要紧的是万一回报在中途断了（设备掉线），清空就等于把缓存也删了。
+   * 改成攒进 listBuf，收到 L END 才整体替换。 */
+  function requestList() {
+    listBuf = [];
+    wantList = false;
+    sendText("L\r\n");
+  }
+
+  async function sendTeach() {
+    const ms = Number(elInPtDwell.value);
+    if (!isFinite(ms) || ms < 0 || ms > 60000) {
+      setPill("err", "停留时间 0~60000ms");
+      return;
+    }
+    errLock = false;
+    wantList = true;
+    setPill("wait", "记录中…");
+    await sendText("T " + Math.round(ms) + "\r\n");
+  }
+
+  /* rounds > 0 → 发 "P <n>"，扣完遍数就自动 PLAY END；
+   * rounds = 0 → 发 "P"，无限循环，只能「停止」或断电收场。
+   *
+   * P 0 在固件里等同于「不带参数」（Proto_CmdPlay 把 0 当无限循环），
+   * 所以这两个入口不会撞到一起。上限 250 也在固件里，超了回 ERR:RANGE。 */
+  async function sendPlay(rounds) {
+    errLock = false;
+    if (playPoints.length === 0) { requestList(); return; }
+    /* 缓存里的点设备不一定有。直接发 P 会吃 ERR:EMPTY，
+     * 提前拦下来并给出下一步，比让人对着一个错误码猜强。 */
+    if (playSource === "cache") {
+      setPill("err", "点表只在网页里，先「推回」");
+      logSys("设备点表为空。先点「推回单片机」把缓存写进去，再试放/循环。");
+      return;
+    }
+    wantList = false;
+    setPill("wait", rounds > 0 ? ("试放 " + rounds + " 遍…") : "开始循环…");
+    await sendText(rounds > 0 ? ("P " + rounds + "\r\n") : "P\r\n");
+  }
+
+  function sendStopPlay() {
+    errLock = false;
+    playState = { active: false, idx: 0, total: 0 };
+    renderPoints();
+    setPill("wait", "停止回放…");
+    sendText("X\r\n");
+  }
+
+  function deletePoint(n) {
+    errLock = false;
+    wantList = true;
+    sendText("D " + n + "\r\n");
+  }
+
+  function savePoints() {
+    if (playPoints.length === 0) {
+      setPill("err", "没有点可存");
+      return;
+    }
+    errLock = false;
+    wantList = false;                      /* W 只回点数，点表没变，不用重拉 */
+    setPill("wait", "写 Flash…");
+    sendText("W\r\n");
+  }
+
+  function clearPoints() {
+    /* 清空是不可逆的（要再按一次存 Flash 才真删），所以问一句。
+     * 只清 RAM：误按之后还能靠复位从 Flash 载回来。
+     * 网页缓存也一起清 —— 不清的话断联重连时会「复活」一批用户以为已经删掉的点。 */
+    if (!window.confirm("清空当前点表？\n（只清 RAM，Flash 里的旧点表要再点一次「存 Flash」才会被覆盖）\n网页缓存也会一起清掉。")) {
+      return;
+    }
+    errLock = false;
+    wantList = false;                /* 本地已经清干净了，不需要再拉一次 */
+    playState = { active: false, idx: 0, total: 0 };
+    playPoints = [];
+    playSource = "dev";
+    ptSig = null;                    /* 置空而不是设成 "[]" —— 设成 "[]" 会让
+                                      * saveCachedPoints 判定「没变化」直接返回，
+                                      * localStorage 里的旧点表就删不掉了 */
+    saveCachedPoints();
+    renderPoints();
+    setPill("wait", "清空中…");
+    sendText("C\r\n");
+  }
+
+  /* ============ 推回 / 导入导出 ============ */
+
+  /* 把网页里的点表写回单片机 RAM。
+   *
+   * 这是「断联丢点」的正解：断联=断电=RAM 清空，而网页还留着副本。
+   * 没有这条路径的话，缓存只能看不能用，还是得把手臂摆到每个姿态重记一遍。
+   *
+   * 先 C 清空再逐条 A：C 是必要的，否则设备里原有的点会和推回的点混在一起。
+   * 逐条等 OK 而不是一次性发完，原因见 waitAck 上面的注释（接收缓冲 1KB）。 */
+  async function pushPoints() {
+    if (!connected) { return; }
+    if (playPoints.length === 0) { setPill("err", "没有点可推"); return; }
+    if (!window.confirm("把网页里的 " + playPoints.length + " 个点写进单片机 RAM？\n\n" +
+                        "· 会覆盖设备当前点表\n" +
+                        "· 要掉电不丢，推完再点一次「存 Flash」")) {
+      return;
+    }
+
+    /* 先把列表抄一份：下面每发一条会触发 L 重拉，边发边改会乱 */
+    const list = playPoints.map((p) => ({ a: p.a.slice(), dwell: p.dwell }));
+
+    errLock = false;
+    setPill("wait", "清空设备点表…");
+    /* 先挂等待再发：固件可能在 write() 还没返回时就把 OK 吐回来了，
+     * 先发后等会漏掉这一条，然后一路等到超时。 */
+    let pending = waitAck(1500);
+    await sendText("C\r\n");
+    let r = await pending;
+    if (!r.ok) {
+      setPill("err", r.line === "TIMEOUT" ? "设备无响应" : errText(r.line.slice(4)));
+      return;
+    }
+
+    for (let k = 0; k < list.length; k++) {
+      setPill("wait", "推回 " + (k + 1) + "/" + list.length + "…");
+      pending = waitAck(1500);
+      await sendText("A " + list[k].a.join(" ") + " " + list[k].dwell + "\r\n");
+      r = await pending;
+      if (!r.ok) {
+        setPill("err", "第 " + (k + 1) + " 点被拒：" +
+                (r.line === "TIMEOUT" ? "无响应" : errText(r.line.slice(4))));
+        logErr("推回中断：只写进前 " + k + " 个点，设备点表当前不完整");
+        requestList();
+        return;
+      }
+    }
+
+    playSource = "dev";
+    setPill("ok", "已推回 " + list.length + " 点");
+    logSys("点表已写进单片机 RAM（" + list.length + " 点）。要脱机跑，点「存 Flash」。");
+    requestList();
+  }
+
+  function exportPoints() {
+    if (playPoints.length === 0) { setPill("err", "没有点可导出"); return; }
+    const d = new Date();
+    const p2 = (n) => String(n).padStart(2, "0");
+    const name = "arm-points-" + d.getFullYear() + p2(d.getMonth() + 1) + p2(d.getDate()) +
+                 "-" + p2(d.getHours()) + p2(d.getMinutes()) + ".json";
+
+    const data = {
+      app: "roboarm-3.0",
+      v: 1,
+      savedAt: d.toISOString(),
+      note: "points[].a = 6 个舵机安装角（度，底座/肩/肘/腕/夹爪/旋转），dwell = 到位停留（毫秒）",
+      points: playPoints.map((p) => ({ a: p.a, dwell: p.dwell })),
+    };
+
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    /* 立刻 revoke 在部分浏览器上会让下载拿不到数据，给一秒缓冲 */
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    setPill("ok", "已导出 " + playPoints.length + " 点");
+    logSys("已导出 " + playPoints.length + " 个点到 " + name);
+  }
+
+  function importPoints(file) {
+    const fr = new FileReader();
+    fr.onload = () => {
+      let pts = null;
+      try {
+        const o = JSON.parse(String(fr.result));
+        pts = Array.isArray(o) ? o : (o && Array.isArray(o.points) ? o.points : null);
+      } catch (e) {
+        setPill("err", "JSON 解析失败：" + (e && e.message ? e.message : e));
+        return;
+      }
+      if (!pts) { setPill("err", "文件里没有 points 数组"); return; }
+
+      const out = [];
+      for (const p of pts) {
+        /* 两种写法都收：{a:[...],dwell:800} 和直接一个数组 [120,70,...] */
+        const a = Array.isArray(p && p.a) ? p.a : (Array.isArray(p) ? p : null);
+        if (!a || a.length < 6) { continue; }
+        const ang = a.slice(0, 6).map((v) => Math.max(0, Math.min(180, Math.round(Number(v)) || 0)));
+        const dw = Math.max(0, Math.min(60000, Math.round(Number(p && p.dwell)) || 0));
+        out.push({ i: out.length + 1, a: ang, dwell: dw });
+        if (out.length >= 64) { break; }
+      }
+
+      if (out.length === 0) { setPill("err", "文件里没有可用的点"); return; }
+
+      playPoints = out;
+      playSource = "cache";             /* 只进网页缓存：设备并不知情 */
+      listBuf = [];
+      playState = { active: false, idx: 0, total: 0 };
+      renderPoints();
+      setPill("ok", "已导入 " + out.length + " 点");
+      logSys("导入 " + out.length + " 个点（只进网页缓存）。要回放先点「推回单片机」。");
+    };
+    fr.onerror = () => setPill("err", "读文件失败");
+    fr.readAsText(file);
+  }
+
+  /* ============ 事件 ============ */
+  elBtnConn.addEventListener("click", () => { connected ? disconnect() : connect(); });
+
+  elBtnSend.addEventListener("click", sendMove);
+
+  /* 夹爪：0 = 张开，1 = 闭合。
+   * 固件里用 SetAngleNow 立即到位，所以只回 OK、没有 DONE ——
+   * 不像 M 指令那样需要等运动结束。 */
+  async function sendGrip(v) {
+    errLock = false;
+    setPill("wait", v === 1 ? "夹爪收紧…" : "夹爪张开…");
+    await sendText("G " + v + "\r\n");
+  }
+  elBtnGripOpen.addEventListener("click", () => { if (connected) { sendGrip(0); } });
+  elBtnGripClose.addEventListener("click", () => { if (connected) { sendGrip(1); } });
+
+  /* 夹爪旋转（PA6）：0° 平行地面，60° 垂直地面（实测），中间任意角度。
+   * 也是立即到位，只回 OK、没有 DONE。 */
+  async function sendRotate(deg) {
+    const a = Number(deg);
+    if (!isFinite(a) || a < 0 || a > 180) {
+      logSys("旋转角度要在 0~180 之间，当前输入：" + deg);
+      return;
+    }
+    errLock = false;
+    setPill("wait", "旋转到 " + a + "°…");
+    await sendText("R " + a + "\r\n");
+  }
+  elBtnRotHoriz.addEventListener("click", () => { if (connected) { sendRotate(ROT_HORIZ_DEG); } });
+  elBtnRotVert.addEventListener("click", () => { if (connected) { sendRotate(ROT_VERT_DEG); } });
+  elBtnRotSet.addEventListener("click", () => { if (connected) { sendRotate(elInRot.value); } });
+
+  /* ============ 转向 / 纯偏航（3.1 的 Y 命令） ============
+   * 和上面「发送 M 指令」的分工：
+   *   M 改 z 时末端沿直线横移，半径 hypot(x,z) 跟着变，肩/肘/腕必须补偿；
+   *   Y 锁定半径与高度，只动底座，俯仰三关节一个数都不变。
+   *
+   * 角度基准是 lastYaw（底座安装角 − 90）。发送后【立刻】把它改成目标值：
+   * 轮询是 500ms 一次，不做乐观更新的话，连点两下 +15 读到的还是旧角度，
+   * 两条命令会指向同一个目标，手臂只转一次。命令被拒时下一帧 ? 的回报
+   * 会把 lastYaw 校正回真实值，所以这里不需要额外的回滚逻辑。 */
+  async function sendYaw(targetDeg) {
+    const t = Math.round(targetDeg);
+    if (!isFinite(t) || t < -YAW_LIMIT || t > YAW_LIMIT) {
+      logSys("偏航角要在 ±" + YAW_LIMIT + "° 之间，当前目标：" + t);
+      return;
+    }
+    lastYaw = t;
+    errLock = false;
+    setPill("wait", "转向 " + (t > 0 ? "+" : "") + t + "°…");
+    await sendText("Y " + t + "\r\n");
+  }
+
+  function nudgeYaw(sign) {
+    const step = Number(elInYawStep.value);
+    if (!isFinite(step) || step <= 0) {
+      logSys("转向步长要是正数，当前输入：" + elInYawStep.value);
+      return;
+    }
+    const raw = lastYaw + sign * step;
+    const t = Math.max(-YAW_LIMIT, Math.min(YAW_LIMIT, raw));
+    if (t !== raw) {
+      logSys("已经到偏航限位 ±" + YAW_LIMIT + "° 了");
+    }
+    sendYaw(t);
+  }
+
+  elBtnYawNeg.addEventListener("click", () => { if (connected) { nudgeYaw(-1); } });
+  elBtnYawPos.addEventListener("click", () => { if (connected) { nudgeYaw(+1); } });
+  elBtnYawZero.addEventListener("click", () => { if (connected) { sendYaw(0); } });
+
+  /* 步长一改就把按钮上的数字同步掉，否则按下去才知道转了多少 */
+  function refreshYawStep() {
+    const s = Math.abs(Number(elInYawStep.value)) || 0;
+    elBtnYawNeg.textContent = "−" + s + "°";
+    elBtnYawPos.textContent = "+" + s + "°";
+  }
+  elInYawStep.addEventListener("input", refreshYawStep);
+  refreshYawStep();
+
+  /* 示教 / 回放 */
+  elBtnPtTeach.addEventListener("click", () => { if (connected) { sendTeach(); } });
+  elBtnPtPlayOnce.addEventListener("click", () => { if (connected) { sendPlay(1); } });
+  elBtnPtPlay.addEventListener("click", () => { if (connected) { sendPlay(0); } });
+  elBtnPtStop.addEventListener("click", () => { if (connected) { sendStopPlay(); } });
+  elBtnPtList.addEventListener("click", () => { if (connected) { requestList(); } });
+  elBtnPtSave.addEventListener("click", () => { if (connected) { savePoints(); } });
+  elBtnPtClear.addEventListener("click", () => { if (connected) { clearPoints(); } });
+  elBtnPtPush.addEventListener("click", () => { if (connected) { pushPoints(); } });
+  elBtnPtExport.addEventListener("click", exportPoints);
+  elBtnPtImport.addEventListener("click", () => elFilePtImport.click());
+  elFilePtImport.addEventListener("change", () => {
+    const f = elFilePtImport.files && elFilePtImport.files[0];
+    if (f) { importPoints(f); }
+    elFilePtImport.value = "";        /* 清掉，否则选同一个文件不再触发 change */
+  });
+
+  elBtnSync.addEventListener("click", () => {
+    if (!lastTarget) { logSys("还没有收到状态，先等一次轮询"); return; }
+    const k = elUnit.value === "mm" ? 1000 : 1;
+    const dp = elUnit.value === "mm" ? 0 : 3;
+    elX.value = (lastTarget.x * k).toFixed(dp);
+    elY.value = (lastTarget.y * k).toFixed(dp);
+    elZ.value = (lastTarget.z * k).toFixed(dp);
+    refreshPreview();
+  });
+
+  elUnit.addEventListener("change", () => {
+    /* 切换单位时把输入框里的数换算过去，别让人重新输一遍 */
+    const toMm = elUnit.value === "mm";
+    [elX, elY, elZ].forEach((el) => {
+      const v = parseFloat(el.value);
+      if (isFinite(v)) {
+        el.value = toMm ? (v * 1000).toFixed(0) : (v / 1000).toFixed(3);
+      }
+      el.step = toMm ? "5" : "0.005";
+    });
+    refreshPreview();
+  });
+
+  [elX, elY, elZ].forEach((el) => el.addEventListener("input", refreshPreview));
+
+  /* 在坐标框里直接回车 = 点发送按钮，少一次鼠标移动 */
+  [elX, elY, elZ].forEach((el) => el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (connected) { sendMove(); }
+    }
+  }));
+
+  elPollOn.addEventListener("change", restartPolling);
+
+  elOptWS.addEventListener("change", () => {
+    /* 不置空 wsCache：画布尺寸没变，底图还是对的，省掉一次 12 万点的重算 */
+    refreshView();
+  });
+
+  /* ============ 视图模式切换 / 3D 交互 ============ */
+  function setViewMode(mode) {
+    viewMode = mode;
+    const is3D = (mode === "3d");
+
+    elView2D.classList.toggle("on", !is3D);
+    elView3D.classList.toggle("on", is3D);
+    elArmCanvas.classList.toggle("mode3d", is3D);
+    elViewHint.classList.toggle("show", is3D);
+
+    /* 工作空间底图是逐点扫逆解算出来的剖面，只对 2D 有意义；
+     * 3D 里硬画会变成一团糊，索性置灰说明「这个选项在 3D 下没用」。 */
+    elOptWS.disabled = is3D;
+    elOptWS.parentElement.style.opacity = is3D ? "0.45" : "";
+    elOptWS.parentElement.title = is3D ? "工作空间底图只在 2D 剖面里画" : "";
+
+    refreshView();
+  }
+
+  elView2D.addEventListener("click", () => { setViewMode("2d"); });
+  elView3D.addEventListener("click", () => { setViewMode("3d"); });
+
+  /* 拖拽 = 转视角，单击 = 取点。靠「按下到抬起移动了多少像素」区分：
+   * 手指/鼠标抖动通常 1~2px，取 3px 门槛足够，又不会把慢拖误判成点击。 */
+  elArmCanvas.addEventListener("pointerdown", (e) => {
+    if (viewMode !== "3d") { return; }
+    camDrag = { x: e.clientX, y: e.clientY, ox: e.clientX, oy: e.clientY, moved: false };
+    elArmCanvas.setPointerCapture(e.pointerId);
+    elArmCanvas.classList.add("dragging");
+  });
+
+  elArmCanvas.addEventListener("pointermove", (e) => {
+    if (!camDrag) { return; }
+
+    if (!camDrag.moved && Math.hypot(e.clientX - camDrag.ox, e.clientY - camDrag.oy) > 3) {
+      camDrag.moved = true;
+    }
+    if (!camDrag.moved) { return; }
+
+    cam.yaw -= (e.clientX - camDrag.x) * 0.008;
+    /* 俯仰夹在 4°~83°：再低就看见「地面之下」，再高就成纯俯视看不出连杆 */
+    cam.pitch = Math.max(0.07, Math.min(1.45, cam.pitch + (e.clientY - camDrag.y) * 0.006));
+    camDrag.x = e.clientX;
+    camDrag.y = e.clientY;
+    refreshView();
+  });
+
+  function endDrag() {
+    camDrag = null;
+    elArmCanvas.classList.remove("dragging");
+  }
+
+  elArmCanvas.addEventListener("pointerup", (e) => {
+    if (!camDrag) { return; }
+    const wasDrag = camDrag.moved;
+    endDrag();
+    if (wasDrag) { return; }
+    if (e.detail > 1) { return; }        /* 双击的第二下不当取点 */
+    handlePick(e);
+  });
+
+  elArmCanvas.addEventListener("pointercancel", endDrag);
+
+  elArmCanvas.addEventListener("wheel", (e) => {
+    if (viewMode !== "3d") { return; }
+    e.preventDefault();
+    cam.dist = Math.max(0.45, Math.min(2.2, cam.dist * Math.exp(e.deltaY * 0.0012)));
+    refreshView();
+  }, { passive: false });
+
+  /* 转晕了双击回到默认机位，比让用户自己瞎拖回去快 */
+  elArmCanvas.addEventListener("dblclick", () => {
+    if (viewMode !== "3d") { return; }
+    cam = { yaw: CAM_HOME.yaw, pitch: CAM_HOME.pitch, dist: CAM_HOME.dist };
+    refreshView();
+  });
+
+  /* 单击 3D 视图 → 在「当前目标高度」那一层平面上取 x/z。
+   * 为什么不用地面 y=0：机械臂手爪几乎总是在某个高度上作业，
+   * 固定取地面等于每次都要手动再改 y，反而更麻烦。
+   * 高度沿用输入框里的 y，用户想换层就改 y 再点。 */
+  function handlePick(e) {
+    const rect = elArmCanvas.getBoundingClientRect();
+    const planeY = (parseFloat(elY.value) || 0) * unitScale();
+
+    const p = pickOnPlane(e.clientX - rect.left, e.clientY - rect.top, planeY);
+    if (p === null) {
+      logSys("这个视角点不到水平面（视线朝上）。把视角压低一点再点，或双击复位。");
+      return;
+    }
+
+    const k = unitScale();
+    elX.value = (p.x / k).toFixed(k === 1 ? 3 : 0);
+    elZ.value = (p.z / k).toFixed(k === 1 ? 3 : 0);
+
+    pickPt = { x: p.x, y: planeY, z: p.z };
+    refreshPreview();
+    refreshView();
+
+    logSys("点选 → x=" + p.x.toFixed(3) + "  z=" + p.z.toFixed(3) +
+           "（高度沿用 y=" + planeY.toFixed(3) + "）");
+
+    if (e.shiftKey) {
+      if (connected) { sendMove(); }
+      else { logSys("未连接，坐标已填好，连上后点「发送 M 指令」即可"); }
+    }
+  }
+
+  let resizeTimer = null;
+  window.addEventListener("resize", () => {
+    if (resizeTimer) { clearTimeout(resizeTimer); }
+    resizeTimer = setTimeout(() => {
+      wsCache = null;
+      refreshView();
+    }, 120);
+  });
+
+  elBtnClear.addEventListener("click", () => { elLog.innerHTML = ""; });
+
+  elOptHex.addEventListener("change", () => {
+    logSys(elOptHex.checked ? "已切换为 HEX 显示（只影响新日志）" : "已切换为文本显示");
+  });
+
+  elBtnManual.addEventListener("click", sendManual);
+
+  function sendManual() {
+    const raw = elManual.value;
+    if (raw.length === 0) { return; }
+
+    if (elOptHexSend.checked) {
+      const bytes = hexToBytes(raw);
+      if (bytes === null) { logErr("HEX 格式不对：需要偶数个十六进制字符，如 AA 55 01"); return; }
+      sendRaw(bytes, raw.trim());
+    } else {
+      sendText(raw + (elOptCRLF.checked ? "\r\n" : ""));
+    }
+
+    if (history[history.length - 1] !== raw) { history.push(raw); }
+    if (history.length > 100) { history.shift(); }
+    histIdx = -1;
+  }
+
+  elManual.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      sendManual();
+      return;
+    }
+    /* ↑/↓ 翻历史 */
+    if (e.key === "ArrowUp" && history.length) {
+      e.preventDefault();
+      histIdx = histIdx < 0 ? history.length - 1 : Math.max(0, histIdx - 1);
+      elManual.value = history[histIdx];
+    }
+    if (e.key === "ArrowDown" && history.length) {
+      e.preventDefault();
+      histIdx = histIdx < 0 ? -1 : Math.min(history.length - 1, histIdx + 1);
+      elManual.value = histIdx < 0 ? "" : history[histIdx];
+    }
+  });
+
+  /* 浏览器级拔线事件 */
+  if ("serial" in navigator) {
+    navigator.serial.addEventListener("disconnect", () => {
+      if (connected) { logErr("串口设备已拔出"); disconnect(); }
+    });
+  }
+
+  /* ============ 启动 ============ */
+  if (!("serial" in navigator)) {
+    elBanner.classList.add("show");
+  }
+  refreshPreview();
+  updateConnUI();
+  refreshView();
+  logSys("就绪。点击右上角「连接串口」，在弹出的列表里选 STM32 对应的串口。");
+  logSys("固件协议：M x y z（米，直线运动）/ G 0|1（夹爪）/ R <角度>（旋转 0~180，0=平行 60=垂直）/ ?（查状态）");
+  logSys("示教回放：T [停留ms] 记录 / P 1 试放一遍 / P 无限循环 / X 停止 / L 列表 / D <序号> 删除 / C 清空 / W 存 Flash");
+  logSys("点表另存了一份在浏览器里：断联/断电后设备点表会空，这里还留着，点「推回单片机」写回去（A 命令）");
+  if (playPoints.length > 0) {
+    logSys("已从网页缓存恢复 " + playPoints.length + " 个示教点（设备尚未连接）");
+  }
+  logSys("视图：右上角切 2D / 3D。3D 下拖拽转向、滚轮缩放、单击水平面取 x/z（Shift 直接发送）、双击复位。");
+  if (location.protocol === "file:") {
+    logSys("提示：若点击连接没有反应，说明浏览器禁止了 file:// 下的串口权限。" +
+           "在本目录执行 python -m http.server 8000，然后访问 http://localhost:8000/serial_console.html");
+  }
+})();
+</script>
+</body>
+</html>

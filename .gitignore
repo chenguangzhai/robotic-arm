@@ -1,0 +1,42 @@
+# ===== 构建产物 =====
+build/
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+*.lst
+*.axf
+*.crf
+*.dep
+*.lnp
+*.sct
+*.iex
+*.htm
+*.bak
+*.orig
+mx.scratch
+compile_commands.json
+
+# ===== 编辑器 / 系统缓存 =====
+.cache/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ===== AI 会话数据（不公开）=====
+.workbuddy/
+.workbuddy-ai/
+
+# ===== CMSIS 预编译库与示例 =====
+# 这些目录不参与本工程编译（CMakeLists.txt 未引用），
+# 却占了每个版本约 50 MB。需要 DSP 库时用 CubeMX 重新生成即可。
+**/CMSIS/Lib/
+**/CMSIS/DSP/
+**/CMSIS/NN/
+
+# 注意：.settings/ 与 .eide/ 是工程配置，需要入库，不要忽略
+!.settings/

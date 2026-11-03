@@ -1,0 +1,96 @@
+version: "4.1"
+name: Robotic_arm
+type: ARM
+deviceName: null
+packDir: null
+srcDirs:
+  - Core
+  - Hardware
+  - Drivers
+virtualFolder:
+  name: <virtual_root>
+  files: []
+  folders:
+    - name: Satar
+      files:
+        - path: startup_stm32f103xb.s
+      folders: []
+dependenceList: []
+outDir: build
+miscInfo:
+  uid: 41f608ae0a6b5de07d30cb95fe9ca585
+targets:
+  Debug:
+    cppPreprocessAttrs:
+      defineList:
+        - "USE_HAL_DRIVER "
+        - STM32F103xB
+      incList: []
+      libList: []
+    excludeList:
+      - <virtual_root>/Drivers
+      - Drivers/CMSIS/Core_A
+      - Drivers/CMSIS/Core
+      - Drivers/CMSIS/docs
+      - Drivers/CMSIS/DSP
+      - Drivers/CMSIS/Lib
+      - Drivers/CMSIS/NN
+      - Drivers/CMSIS/RTOS
+      - Drivers/CMSIS/RTOS2
+    settings:
+      debugger: cortex-debug
+    toolchain: GCC
+    toolchainConfigMap:
+      GCC:
+        archExtensions: ""
+        cpuType: Cortex-M3
+        floatingPointHardware: none
+        options:
+          version: 5
+          afterBuildTasks: []
+          asm-compiler:
+            ASM_FLAGS: ""
+          beforeBuildTasks: []
+          c/cpp-compiler:
+            CXX_FLAGS: ""
+            C_FLAGS: ""
+            language-c: c11
+            language-cpp: c++11
+            one-elf-section-per-data: true
+            one-elf-section-per-function: true
+            optimization: level-debug
+            warnings: all-warnings
+          global:
+            $float-abi-type: hard
+            misc-control: ""
+            not-use-syscalls: true
+            output-debug-info: enable
+            use-newlib-nano: true
+          linker:
+            $outputTaskExcludes:
+              - .bin
+            LD_FLAGS: ""
+            LIB_FLAGS: -lm
+            output-format: elf
+            remove-unused-input-sections: true
+        scatterFilePath: STM32F103XX_FLASH.ld
+        storageLayout:
+          RAM: []
+          ROM: []
+        useCustomScatterFile: true
+    uploadConfigMap:
+      JLink:
+        baseAddr: ""
+        bin: ""
+        cpuInfo:
+          cpuName: STM32F103C8
+          vendor: ST
+        otherCmds: ""
+        proType: 1
+        speed: 8000
+      OpenOCD:
+        baseAddr: "0x08000000"
+        bin: ""
+        interface: cmsis-dap-v1
+        target: stm32f1x
+    uploader: OpenOCD
