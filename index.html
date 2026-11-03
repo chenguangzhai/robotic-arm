@@ -84,14 +84,17 @@
 
   <h2>在线体验</h2>
   <div class="actions">
-    <a class="btn primary" href="tools/serial_console.html">▸ 打开网页上位机</a>
+    <a class="btn primary" href="tools/serial_console.html?demo=1">▸ 直接演示（无需硬件）</a>
+    <a class="btn" href="tools/serial_console.html">打开上位机（接硬件）</a>
     <a class="btn" href="https://github.com/chenguangzhai/robotic-arm">查看源码</a>
   </div>
 
   <p class="note">
-    <b>上位机需要真实硬件才能连上。</b>它通过浏览器 Web Serial 直连串口，
-    请用 <b>Chrome / Edge</b>（Firefox、Safari 不支持），并把 USB-TTL 接上机械臂。
-    <br>没有硬件也能打开看界面、拖拽 3D 姿态视图、浏览工作空间底图。
+    <b>「直接演示」用内置模拟设备，不接硬件也能看到机械臂动起来。</b>
+    它伪造的是一个虚拟串口设备，指令照发、按固件协议应答，
+    所以姿态视图、状态灯、示教面板跑的都是真实代码路径。
+    <br>要连真实机械臂时，用 <b>Chrome / Edge</b>（Firefox、Safari 不支持 Web Serial），
+    并把 USB-TTL 接到板子上。
   </p>
 
   <h2>文档</h2>
@@ -121,6 +124,10 @@
     中栏的姿态视图把固件里的运动学在浏览器里<b>重新实现了一遍</b>，而且由串口回报的
     <b>实际安装角</b>驱动，不是用目标坐标反算——所以图上末端与目标红十字的距离，
     就是真实的逆解误差。右侧日志会显示每一条下发的字节。
+    <br><br>
+    演示模式下试这几条（发送框里直接输入）：<code>M 0.30 0.10 0</code> 会走一遍逆解并
+    直线过去，<code>M -0.28 0.10 0</code> 会被判超出工作空间，<code>G 1</code> /
+    <code>R 60</code> 动夹爪，<code>P</code> 无限循环回放，<code>X</code> 停在当前姿态。
     <br><br>
     想理解设计取舍（为什么示教记关节角不记坐标、为什么减速上限用
     <code>sqrt(2ad)</code>），直接看结论版的第 3 节。

@@ -271,6 +271,7 @@
       <option>460800</option>
       <option>921600</option>
     </select>
+    <button id="btnDemo" title="不接硬件，用内置模拟设备跑一遍">演示模式</button>
     <button id="btnConn" class="primary">连接串口</button>
     <div class="dot" id="dot"></div>
     <div class="conn-state" id="connState">未连接</div>
@@ -461,6 +462,7 @@
   /* ============ 元素 ============ */
   const $ = (id) => document.getElementById(id);
   const elBaud = $("baud"), elBtnConn = $("btnConn"), elDot = $("dot"), elConnState = $("connState");
+  const elBtnDemo = $("btnDemo");
   const elX = $("inX"), elY = $("inY"), elZ = $("inZ"), elUnit = $("unit");
   const elBtnSend = $("btnSend"), elBtnSync = $("btnSync"), elPreview = $("cmdPreview");
   const elBtnGripOpen = $("btnGripOpen"), elBtnGripClose = $("btnGripClose");
@@ -515,6 +517,10 @@
   /* ============ 状态 ============ */
   let port = null, reader = null, writer = null, connected = false;
   let readLoopPromise = null;     /* 关串口前必须等它退干净，否则 close() 会报端口仍被锁 */
+
+  /* 演示模式状态（内置模拟设备，实现见文末「演示模式」一节） */
+  let demoOn = false, demoTimer = null, demoDwellTimer = null, demoAutoTimer = null;
+  let demoDev = null, demoTicks = 0;
   let rxBuf = "";                 /* 未凑满一行的残留文本 */
   let pollTimer = null;
   let writeChain = Promise.resolve();
@@ -600,6 +606,7 @@
 
   /* ============ 串口 ============ */
   async function connect() {
+    if (demoOn) { demoStop(); }             /* 真串口优先，先退出演示 */
     if (!("serial" in navigator)) {
       elBanner.classList.add("show");
       return;
@@ -628,6 +635,7 @@
   }
 
   async function disconnect() {
+    if (demoOn) { demoStop(); return; }     /* 演示没有真端口，走自己的收尾 */
     stopPolling();
     connected = false;
 
@@ -1574,9 +1582,16 @@
   /* ============ UI 同步 ============ */
   function updateConnUI() {
     elDot.className = "dot" + (connected ? " on" : "");
-    elConnState.textContent = connected ? ("已连接 " + elBaud.value) : "未连接";
-    elBtnConn.textContent = connected ? "断开" : "连接串口";
+    elConnState.textContent = demoOn
+      ? "演示模式（模拟设备）"
+      : (connected ? ("已连接 " + elBaud.value) : "未连接");
+    /* 演示中这个按钮是灰的，文案就别再写"断开"，否则和「退出演示」打架 */
+    elBtnConn.textContent = (connected && !demoOn) ? "断开" : "连接串口";
     elBtnConn.classList.toggle("primary", !connected);
+    elBtnConn.disabled = demoOn;          /* 演示中统一从「退出演示」出 */
+    elBtnDemo.textContent = demoOn ? "退出演示" : "演示模式";
+    elBtnDemo.classList.toggle("primary", demoOn);
+    elBtnDemo.disabled = connected && !demoOn;   /* 真串口连着时不该混进来 */
     elBtnSend.disabled = !connected;
     elBtnGripOpen.disabled = !connected;
     elBtnGripClose.disabled = !connected;
@@ -1974,6 +1989,7 @@
 
   /* ============ 事件 ============ */
   elBtnConn.addEventListener("click", () => { connected ? disconnect() : connect(); });
+  elBtnDemo.addEventListener("click", () => { demoOn ? demoStop() : demoStart(); });
 
   elBtnSend.addEventListener("click", sendMove);
 
@@ -2277,6 +2293,394 @@
     });
   }
 
+  /* ============ 演示模式：内置模拟设备 ============
+   *
+   * 目的：不接硬件也能看懂这个工程在干什么（GitHub Pages 上没有串口可用）。
+   *
+   * 做法不是"另画一套动画"，而是伪造一个虚拟串口设备：
+   *   · writer 换成一个假对象，收到的字节交给 demoRx() 解析
+   *   · 设备按固件协议原样回 S / OK / DONE / PLAY / L 这些行
+   * 上行方向照样走 onBytes → onLine，于是姿态渲染、状态灯、示教面板、3D 视图
+   * 全部跑在**真实代码路径**上，不会出现"演示一套、实机另一套"的漂移。
+   *
+   * 与实机的唯一偏差：实机是被动应答 ?（500ms 一次），演示按 100ms 主动推 S，
+   * 否则姿态会像幻灯片。其余时序（停留、PLAY 事件、DONE）都照协议来。
+   */
+  const DEMO_STEP = 2.4;          /* 每 tick(50ms) 最多转 2.4°，约 48°/s */
+  const DEMO_EMIT_EVERY = 2;      /* 每 2 个 tick 推一次 S，约 100ms */
+
+  /* 4 个预置点位。6 个舵机的安装角，顺序 = 舵机编号：
+   *   1 底座 / 2 肩 / 3 肘 / 4 腕 / 5 夹爪旋转 / 6 夹爪开合
+   * 注意 S 行的字段顺序是「夹爪、旋转」，和舵机编号相反，发的时候要换过来。 */
+  const DEMO_POINTS = [
+    { a: [ 90, 120, 69, 42,  0,  0], dwell: 600 },   /* 初始位：夹爪水平、张开 */
+    { a: [ 90, 100, 58, 80,  0, 60], dwell: 700 },   /* 前伸下探 + 夹紧 */
+    { a: [130, 104, 66, 70, 60, 60], dwell: 700 },   /* 抬升 + 转 40° + 夹爪转垂直 */
+    { a: [ 50, 104, 66, 70, 60,  0], dwell: 700 },   /* 放到另一侧 + 松开 */
+  ];
+
+  const demoEncoder = new TextEncoder();
+  const demoDecoder = new TextDecoder("utf-8", { fatal: false });
+
+  function demoReset() {
+    demoDev = {
+      a: DEMO_POINTS[0].a.slice(),     /* 当前角，浮点，逐 tick 逼近目标 */
+      t: DEMO_POINTS[0].a.slice(),     /* 目标角 */
+      moving: false,
+      mode: "idle",                    /* idle | move | play —— 决定到位后回什么 */
+      playing: false,
+      rounds: null,                    /* 剩余轮数，null = 无限 */
+      autoLoop: true,                  /* 跑完一轮自动再来，演示要一直动着 */
+      cur: -1,
+      pts: DEMO_POINTS.map((p, i) => ({ i: i + 1, a: p.a.slice(), dwell: p.dwell })),
+    };
+    demoTicks = 0;
+  }
+
+  /* 设备 → 上位机：走真正的接收路径 */
+  function demoEmit(line) {
+    onBytes(demoEncoder.encode(line + "\r\n"));
+  }
+
+  function demoStatusLine() {
+    const d = demoDev;
+    const a = d.a.map((v) => Math.round(v));
+    const fk = forwardKinematics(a[0], a[1], a[2], a[3]);
+    const mm = (v) => Math.round(v * 1000);
+    /* 字段顺序照固件：x y z 底座 肩 肘 腕 **夹爪 旋转** busy
+     * 坐标用正解从当前角度算，和固件"回报实际落点"的做法一致。 */
+    return "S " + mm(fk.x) + " " + mm(fk.y) + " " + mm(fk.z) + " " +
+           a[0] + " " + a[1] + " " + a[2] + " " + a[3] + " " +
+           a[5] + " " + a[4] + " " + (d.moving ? "1" : "0");
+  }
+
+  /* 三连杆逆解，与固件 model.c 同一套约定：从 α=0（夹爪水平）向两侧以 5° 放宽，
+   * 肘上/肘下都试，取第一个合法解；够不到返回 null。
+   * 只算前 4 轴，夹爪/旋转保持不动。 */
+  function demoIK(x, y, z) {
+    const r = Math.hypot(x, z);
+    const yawDeg = Math.atan2(z, x) / D2R;
+    const waist = WAIST.zero + WAIST.dir * yawDeg;
+    if (!(waist >= -0.01 && waist <= 180.01)) { return null; }   /* 背后方向直接判不可达 */
+    const h = y - LINK.l0;                                       /* 相对肩关节高度 */
+
+    for (let ad = 0; ad <= 90; ad += 5) {
+      for (let si = 0; si < (ad === 0 ? 1 : 2); si++) {
+        const alpha = (si === 0 ? ad : -ad) * D2R;
+        const wr = r - LINK.l3 * Math.cos(alpha);
+        const wh = h - LINK.l3 * Math.sin(alpha);
+        const c2 = (wr * wr + wh * wh - LINK.l1 * LINK.l1 - LINK.l2 * LINK.l2) /
+                   (2 * LINK.l1 * LINK.l2);
+        if (c2 < -1 || c2 > 1) { continue; }
+
+        for (const s2 of [1, -1]) {                              /* 肘上 / 肘下 */
+          const th2 = s2 * Math.acos(c2);
+          const th1 = Math.atan2(wh, wr) -
+                      Math.atan2(LINK.l2 * Math.sin(th2), LINK.l1 + LINK.l2 * Math.cos(th2));
+          const th3 = alpha - th1 - th2;
+          const a1 = CAL.z1 - th1 / D2R;
+          const a2 = CAL.z2 + th2 / D2R;
+          const a3 = CAL.z3 - th3 / D2R;
+          /* 行程：肩 0~180、肘 45~180（下限 45 见固件 SERVO_MIN）、腕 0~180 */
+          if (a1 < 0 || a1 > 180 || a2 < 45 || a2 > 180 || a3 < 0 || a3 > 180) { continue; }
+          return [waist, a1, a2, a3];
+        }
+      }
+    }
+    return null;
+  }
+
+  function demoTick() {
+    const d = demoDev;
+    if (!d) { return; }
+
+    let moving = false;
+    for (let i = 0; i < 6; i++) {
+      const diff = d.t[i] - d.a[i];
+      if (Math.abs(diff) <= DEMO_STEP) { d.a[i] = d.t[i]; }
+      else { d.a[i] += (diff > 0 ? DEMO_STEP : -DEMO_STEP); moving = true; }
+    }
+
+    if (moving) {
+      d.moving = true;
+    } else if (d.moving) {
+      /* 刚停稳：只通知一次 */
+      d.moving = false;
+      demoArrive();
+    }
+
+    if (++demoTicks % DEMO_EMIT_EVERY === 0) { demoEmit(demoStatusLine()); }
+  }
+
+  function demoArrive() {
+    const d = demoDev;
+    if (d.mode === "move") {
+      d.mode = "idle";
+      demoEmit("DONE");
+      return;
+    }
+    if (d.mode === "play" && d.playing) {
+      /* 按该点的停留时间再走下一个，和固件 Play_Tick 的两相状态机一致 */
+      const p = d.pts[d.cur];
+      const dwell = p ? p.dwell : 500;
+      clearTimeout(demoDwellTimer);
+      demoDwellTimer = setTimeout(() => {
+        if (demoOn && d.playing) { demoPlayStep(); }
+      }, dwell);
+    }
+  }
+
+  function demoPlay(rounds) {
+    const d = demoDev;
+    d.playing = true;
+    d.rounds = (rounds === null || rounds === undefined) ? null : Math.max(1, rounds | 0);
+    d.cur = -1;
+    d.mode = "play";
+    demoPlayStep();
+  }
+
+  function demoPlayStep() {
+    const d = demoDev;
+    if (!demoOn || !d.playing) { return; }
+
+    if (d.cur + 1 >= d.pts.length) {
+      /* 一轮到底 */
+      if (d.rounds !== null) {
+        d.rounds -= 1;
+        if (d.rounds <= 0) {
+          demoEmit("PLAY END");
+          d.playing = false;
+          d.mode = "idle";
+          demoAutoRestart();
+          return;
+        }
+      }
+      d.cur = -1;                    /* 无限模式直接从头再来，不发 PLAY END */
+    }
+
+    d.cur += 1;
+    const p = d.pts[d.cur];
+    demoEmit("PLAY " + (d.cur + 1) + "/" + d.pts.length);
+    d.t = p.a.slice();               /* 关节空间：直接给目标角，不做逆解 */
+    d.mode = "play";
+    /* 显式置位：目标可能就等于当前姿态（比如刚上电就放第 1 点），
+     * 不置的话 demoTick 里"刚停稳"的分支永远进不去，回放会卡在第一个点。 */
+    d.moving = true;
+  }
+
+  /* 自动循环：跑完一轮停 1.4s 再放一遍。让访客打开页面就能看到动作，
+   * 中间那次停顿是故意的 —— 正好演示「试放 P 1」和「循环 P」的区别。 */
+  function demoAutoRestart() {
+    const d = demoDev;
+    if (!d || !d.autoLoop || !demoOn) { return; }
+    clearTimeout(demoAutoTimer);
+    demoAutoTimer = setTimeout(() => {
+      if (demoOn && d && !d.playing) { demoPlay(1); }
+    }, 1400);
+  }
+
+  /* 上位机 → 设备：解析指令并回复，规则照 protocol.c */
+  function demoRx(text) {
+    if (!demoOn || !demoDev) { return; }
+    const d = demoDev;
+
+    String(text).split(/\r?\n/).forEach((raw) => {
+      const s = raw.trim();
+      if (!s) { return; }
+      const t = s.split(/[\s,\t]+/);
+      const cmd = (t[0] || "").toUpperCase();
+      const num = (i) => Number(t[i]);
+
+      switch (cmd) {
+        case "?": demoEmit(demoStatusLine()); return;
+
+        case "M": {
+          if (t.length < 4) { demoEmit("ERR:ARG"); return; }
+          const x = num(1), y = num(2), z = num(3);
+          if (!isFinite(x) || !isFinite(y) || !isFinite(z)) { demoEmit("ERR:ARG"); return; }
+          if (Math.abs(x) > 1 || Math.abs(y) > 1 || Math.abs(z) > 1) { demoEmit("ERR:RANGE"); return; }
+          if (d.playing) { demoEmit("ERR:BUSY"); return; }
+          const ang = demoIK(x, y, z);
+          if (!ang) { demoEmit("ERR:OUT"); return; }
+          d.t = ang.concat([d.t[4], d.t[5]]);     /* 只动前 4 轴，夹爪/旋转保持 */
+          d.mode = "move";
+          d.moving = true;                        /* 目标可能等于当前，见 demoPlayStep 的注释 */
+          d.autoLoop = false;
+          demoEmit("OK");
+          return;
+        }
+
+        case "Y": {
+          if (t.length < 2) { demoEmit("ERR:ARG"); return; }
+          const v = num(1);
+          if (!isFinite(v) || Math.abs(v) > 88) { demoEmit("ERR:RANGE"); return; }
+          if (d.playing) { demoEmit("ERR:BUSY"); return; }
+          d.t[0] = WAIST.zero + WAIST.dir * v;    /* 纯偏航：只改底座 */
+          d.mode = "move";
+          d.moving = true;
+          d.autoLoop = false;
+          demoEmit("OK");
+          return;
+        }
+
+        case "V": {
+          const v = num(1);
+          if (!isFinite(v) || v < 20 || v > 150) { demoEmit("ERR:RANGE"); return; }
+          demoEmit("OK " + Math.round(v));
+          return;
+        }
+
+        case "G": {
+          if (t.length < 2) { demoEmit("ERR:ARG"); return; }
+          const v = num(1);
+          if (v !== 0 && v !== 1) { demoEmit("ERR:RANGE"); return; }
+          d.a[5] = d.t[5] = (v === 1 ? 60 : 0);   /* 固件用 SetAngleNow，立即到位 */
+          demoEmit("OK");
+          demoEmit(demoStatusLine());
+          return;
+        }
+
+        case "R": {
+          if (t.length < 2) { demoEmit("ERR:ARG"); return; }
+          const v = num(1);
+          if (!isFinite(v) || v < 0 || v > 180) { demoEmit("ERR:RANGE"); return; }
+          d.a[4] = d.t[4] = v;
+          demoEmit("OK");
+          demoEmit(demoStatusLine());
+          return;
+        }
+
+        case "T": {
+          if (d.playing) { demoEmit("ERR:BUSY"); return; }
+          if (d.pts.length >= 64) { demoEmit("ERR:FULL"); return; }
+          const dwell = (t.length > 1 && isFinite(num(1)))
+            ? Math.max(0, Math.round(num(1))) : 500;
+          d.pts.push({ i: d.pts.length + 1, a: d.a.map((v) => Math.round(v)), dwell });
+          demoEmit("OK " + d.pts.length);
+          return;
+        }
+
+        case "A": {
+          if (t.length < 7) { demoEmit("ERR:ARG"); return; }
+          if (d.playing) { demoEmit("ERR:BUSY"); return; }
+          if (d.pts.length >= 64) { demoEmit("ERR:FULL"); return; }
+          const ang = [1, 2, 3, 4, 5, 6].map((i) => num(i));
+          if (ang.some((v) => !isFinite(v) || v < 0 || v > 180)) { demoEmit("ERR:RANGE"); return; }
+          const dwell = (t.length > 7 && isFinite(num(7)))
+            ? Math.max(0, Math.round(num(7))) : 500;
+          d.pts.push({ i: d.pts.length + 1, a: ang, dwell });
+          demoEmit("OK " + d.pts.length);
+          return;
+        }
+
+        case "L": {
+          d.pts.forEach((p) => {
+            demoEmit("L " + p.i + " " + p.a.join(" ") + " " + p.dwell);
+          });
+          demoEmit("L END " + d.pts.length);
+          return;
+        }
+
+        case "P": {
+          if (d.playing) { demoEmit("ERR:BUSY"); return; }
+          if (!d.pts.length) { demoEmit("ERR:EMPTY"); return; }
+          const hasArg = t.length > 1;
+          const n = num(1);
+          if (hasArg && (!isFinite(n) || n < 1)) { demoEmit("ERR:ARG"); return; }
+          demoEmit("OK " + d.pts.length);
+          d.autoLoop = false;                     /* 手动点了循环就别再自动接管 */
+          demoPlay(hasArg ? Math.round(n) : null);
+          return;
+        }
+
+        case "X": {
+          d.playing = false;
+          d.mode = "idle";
+          d.autoLoop = false;
+          clearTimeout(demoDwellTimer);
+          clearTimeout(demoAutoTimer);
+          /* 固件的 X 是"停在当前姿态"，不是"走完这一段再停"：
+           * 把目标钉在当前位置，否则演示会继续滑到点位上，看着像没停住。 */
+          d.t = d.a.slice();
+          d.moving = false;
+          demoEmit("OK");
+          demoEmit(demoStatusLine());
+          return;
+        }
+
+        case "D": {
+          if (t.length < 2) { demoEmit("ERR:ARG"); return; }
+          const n = num(1);
+          if (!isFinite(n) || n < 1 || n > d.pts.length) { demoEmit("ERR:INDEX"); return; }
+          d.pts.splice(n - 1, 1);
+          d.pts.forEach((p, i) => { p.i = i + 1; });
+          demoEmit("OK " + d.pts.length);
+          return;
+        }
+
+        case "C": {
+          d.pts = [];
+          d.playing = false;
+          d.mode = "idle";
+          d.autoLoop = false;
+          clearTimeout(demoDwellTimer);
+          clearTimeout(demoAutoTimer);
+          demoEmit("OK 0");
+          return;
+        }
+
+        case "W": demoEmit("OK " + d.pts.length); return;   /* 假装写进了 Flash */
+
+        default: demoEmit("ERR:CMD");
+      }
+    });
+  }
+
+  function demoStart() {
+    if (demoOn) { return; }
+    if (connected) { disconnect(); }        /* 真串口优先 */
+
+    demoReset();
+    demoOn = true;
+    connected = true;
+    reader = null;
+    port = null;
+    /* 关键一步：只换 writer。上行数据不走这里，而是由 demoEmit 直接喂 onBytes，
+     * 所以后续所有解析/渲染逻辑完全不知道设备是假的。 */
+    writer = {
+      write: async (bytes) => {
+        const text = demoDecoder.decode(bytes);
+        setTimeout(() => { try { demoRx(text); } catch (e) { /* 忽略 */ } }, 15);
+      },
+    };
+
+    updateConnUI();          /* 内部会顺手 requestList()，我们回一串 L */
+    restartPolling();        /* 照实机节奏发 ? */
+    clearInterval(demoTimer);
+    demoTimer = setInterval(demoTick, 50);
+
+    logSys("已进入演示模式：设备是内置模拟的，指令照常发、机械臂照常动，不需要硬件。");
+    logSys("内置 4 个示教点，正在自动循环回放。「停止」可以停住，「循环」看无限模式。");
+    logSys("发送框里的 M / G / R / Y 指令都会真的生效（M 走的是三连杆逆解）。");
+
+    setTimeout(() => { if (demoOn) { demoEmit("READY 3.0"); } }, 250);
+    setTimeout(() => { if (demoOn && demoDev && !demoDev.playing) { demoPlay(1); } }, 900);
+  }
+
+  function demoStop() {
+    if (!demoOn) { return; }
+    demoOn = false;
+    clearInterval(demoTimer); demoTimer = null;
+    clearTimeout(demoDwellTimer); demoDwellTimer = null;
+    clearTimeout(demoAutoTimer); demoAutoTimer = null;
+    if (demoDev) { demoDev.playing = false; }
+    stopPolling();
+    connected = false;
+    writer = null;
+    updateConnUI();
+    logSys("已退出演示模式。");
+  }
+
   /* ============ 启动 ============ */
   if (!("serial" in navigator)) {
     elBanner.classList.add("show");
@@ -2295,6 +2699,12 @@
   if (location.protocol === "file:") {
     logSys("提示：若点击连接没有反应，说明浏览器禁止了 file:// 下的串口权限。" +
            "在本目录执行 python -m http.server 8000，然后访问 http://localhost:8000/serial_console.html");
+  }
+
+  /* 落地页的「直接演示」带 ?demo=1 进来，那就别让人再点一次 */
+  if (/[?&]demo\b/.test(location.search)) {
+    logSys("检测到 ?demo=1，自动进入演示模式。");
+    demoStart();
   }
 })();
 </script>

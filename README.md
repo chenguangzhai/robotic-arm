@@ -6,8 +6,9 @@
 一个从零手写的嵌入式控制工程：不依赖任何中间件，从 PWM 脉宽到逆解到协议解析全部自己实现，
 分层清晰，每一层都不知道上下层的内部细节。
 
-**在线演示**：<https://chenguangzhai.github.io/robotic-arm/> — 网页上位机可直接打开看界面、
-拖拽 3D 姿态视图；连硬件需 Chrome / Edge（Web Serial）。
+**在线演示**：<https://chenguangzhai.github.io/robotic-arm/> — 点「直接演示」即可，
+**不需要硬件**：网页内置一台模拟设备，按固件协议应答，机械臂会自己循环回放示教点。
+要连真实机械臂请用 Chrome / Edge（Web Serial）。
 
 ---
 
@@ -137,6 +138,14 @@ openocd -f interface/stlink.cfg -f target/stm32f1x.cfg -c "program build/Debug/O
 直接用 **Chrome / Edge** 打开 `tools/serial_console.html`（需 `https` 或 `localhost`
 环境才有 Web Serial 权限），点连接选择串口即可。
 
+**不想连硬件？** 点右上角「演示模式」，或在地址后加 `?demo=1`：网页会启动一台
+**内置模拟设备**——只是把 `writer` 换成假对象，上行数据照样走真实的 `onBytes`/`onLine`，
+所以渲染、日志、状态灯、示教面板跑的都是同一套代码，不存在"演示一套、实机另一套"。
+
+演示下 `M` 走的是真实三连杆逆解（发 `M 0.30 0.10 0` 会解算并直线过去），
+`M -0.28 0.10 0` 会回 `ERR:OUT`，`G` / `R` / `Y` / `T` / `L` / `P` / `X` / `C` / `W`
+都按固件语义生效。自查脚本：`python tools/_cdp_demo_test.py`。
+
 - 左栏：坐标输入 / 单位切换、偏航、夹爪、实时状态、示教点面板
 - 中栏：姿态视图，2D 侧视剖面 + 工作空间底图，或 3D 立体视图（可切换）
 - 右栏：串口日志，RX/TX 分色、毫秒时间戳、HEX 模式
@@ -175,4 +184,4 @@ openocd -f interface/stlink.cfg -f target/stm32f1x.cfg -c "program build/Debug/O
 
 ## License
 
-暂未指定开源许可证，如需复用请先联系作者。
+[MIT](LICENSE) © 青寒 (chenguangzhai) — 随便用，保留版权声明即可。
