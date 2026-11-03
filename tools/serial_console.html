@@ -291,7 +291,16 @@
     </div>
 
     <div class="panel-body">
-      <div class="section-label">目标坐标</div>
+      <div class="section-label" style="display:flex; align-items:center; justify-content:space-between; gap:8px">
+        <span>目标坐标</span>
+        <!-- 第三个输入框的两种语义：Z 横向坐标 / 偏航角。
+             开关只改「怎么填」，最终发出去的永远是 M x y z，
+             角度会先被换算成 z（见 axisMode 那一段注释）。 -->
+        <span class="seg" role="group" aria-label="第三个输入框填横向坐标还是偏航角">
+          <button id="btnAxisZ" class="on" title="第三个框填 Z 横向坐标">Z 横向</button>
+          <button id="btnAxisYaw" title="第三个框填偏航角（度），z 由 x·tan(θ) 换算">偏航角</button>
+        </span>
+      </div>
 
       <div class="field-row">
         <div class="field">
@@ -303,10 +312,12 @@
           <input type="number" id="inY" value="0.10" step="0.005" min="0" max="1">
         </div>
         <div class="field">
-          <label for="inZ">Z 横向</label>
+          <label for="inZ" id="lbThird">Z 横向</label>
           <input type="number" id="inZ" value="0.00" step="0.005" min="-1" max="1">
         </div>
       </div>
+
+      <div class="hint" id="thirdHint" style="display:none"></div>
 
       <div class="field-row" style="grid-template-columns:1fr 1fr; margin-top:6px">
         <select id="unit" title="坐标单位">
@@ -464,6 +475,8 @@
   const elBaud = $("baud"), elBtnConn = $("btnConn"), elDot = $("dot"), elConnState = $("connState");
   const elBtnDemo = $("btnDemo");
   const elX = $("inX"), elY = $("inY"), elZ = $("inZ"), elUnit = $("unit");
+  const elBtnAxisZ = $("btnAxisZ"), elBtnAxisYaw = $("btnAxisYaw");
+  const elLbThird = $("lbThird"), elThirdHint = $("thirdHint");
   const elBtnSend = $("btnSend"), elBtnSync = $("btnSync"), elPreview = $("cmdPreview");
   const elBtnGripOpen = $("btnGripOpen"), elBtnGripClose = $("btnGripClose");
   const elBtnRotHoriz = $("btnRotHoriz"), elBtnRotVert = $("btnRotVert");
@@ -1539,13 +1552,54 @@
   /* ============ 运动控制 ============ */
   const unitScale = () => (elUnit.value === "mm" ? 0.001 : 1);
 
+  /* ---------- 第三个输入框：Z 横向坐标 / 偏航角 ----------
+   *
+   * 这是同一个空间点的两套写法，不是两条不同的指令：
+   * 固件只认 M x y z（内部再算 yaw = atan2(z, x)、r = hypot(x, z)），
+   * 所以「填角度」时必须先在网页里把角度还原成 z：
+   *
+   *   z = x · tan(θ)        θ = atan2(z, x)
+   *
+   * x > 0 时这两个式子互为逆运算，所以：
+   *   · 切模式不改变目标点 → 切换瞬间手臂不会动
+   *   · 俯视图点选反过来用 atan2 就行，取到的点还是原来那个点
+   *
+   * 注意半径 r = hypot(x, z) = x / cos(θ) 会随角度变大（x 被保住，越转越远）。
+   * 想「锁半径、只转底座」请用下面「转向 / 偏航」区的 Y 按钮，那条指令不碰半径。 */
+  let axisMode = "z";              /* "z" = 横向坐标（跟单位走） | "yaw" = 偏航角（永远是度） */
+
+  const zFromYaw = (x, deg) => x * Math.tan(deg * D2R);
+  const yawFromXZ = (x, z) => Math.atan2(z, x) / D2R;
+
+  /* 偏航模式下先做合法性检查，免得 tan(90°) 这种数悄悄变成一条怪指令。
+   * 返回 null 表示没问题，否则返回给人看的说明。 */
+  function thirdProblem() {
+    if (axisMode !== "yaw") { return null; }
+
+    const deg = parseFloat(elZ.value);
+    if (!isFinite(deg)) { return "偏航角必须是数字"; }
+    if (deg < -YAW_LIMIT || deg > YAW_LIMIT) {
+      return "偏航角要在 ±" + YAW_LIMIT + "° 之间，当前：" + deg;
+    }
+
+    const x = parseFloat(elX.value);
+    if (!isFinite(x) || x <= 0) {
+      return "偏航模式下 X 要大于 0（z = x·tanθ 以它为基准）";
+    }
+    return null;
+  }
+
   function readTargets() {
     const k = unitScale();
-    return {
-      x: parseFloat(elX.value) * k,
-      y: parseFloat(elY.value) * k,
-      z: parseFloat(elZ.value) * k,
-    };
+    const x = parseFloat(elX.value) * k;
+    const y = parseFloat(elY.value) * k;
+
+    /* 偏航模式下第三个框不是长度，不能乘单位系数 */
+    const z = (axisMode === "yaw")
+      ? (isFinite(x) ? zFromYaw(x, parseFloat(elZ.value)) : NaN)
+      : parseFloat(elZ.value) * k;
+
+    return { x: x, y: y, z: z };
   }
 
   function buildCmd() {
@@ -1554,14 +1608,102 @@
     return "M " + t.x.toFixed(4) + " " + t.y.toFixed(4) + " " + t.z.toFixed(4);
   }
 
+  /* 偏航模式下把「角度 → z」这一层换算摊开给人看，
+   * 否则输入框写着 30，实际发出去的是 0.1617，容易以为是 bug。 */
+  function refreshThirdHint() {
+    if (axisMode !== "yaw") {
+      elThirdHint.style.display = "none";
+      elThirdHint.textContent = "";
+      return;
+    }
+
+    elThirdHint.style.display = "";
+    const bad = thirdProblem();
+    if (bad !== null) {
+      elThirdHint.textContent = bad;
+      return;
+    }
+
+    const k = unitScale();
+    const u = (k === 1) ? "m" : "mm";
+    const dp = (k === 1) ? 3 : 0;
+    const x = parseFloat(elX.value) * k;
+    const deg = parseFloat(elZ.value);
+    const z = zFromYaw(x, deg);
+
+    elThirdHint.textContent = "偏航 " + deg.toFixed(0) + "° → z = " + (z / k).toFixed(dp) + " " + u +
+      "，半径 " + (Math.hypot(x, z) / k).toFixed(dp) + " " + u +
+      "。想锁半径只转底座，用下面「转向 / 偏航」的 Y 按钮。";
+  }
+
   function refreshPreview() {
-    const c = buildCmd();
-    const txt = c === null ? "坐标必须是数字" : c;
+    const bad = thirdProblem();
+    const c = bad === null ? buildCmd() : null;
+    const txt = bad === null
+      ? (c === null ? "坐标必须是数字" : c)
+      : bad;
+
     /* 预览不再单独占一行（矮屏下太奢侈），改成按钮的悬停提示：
      * 鼠标停在「发送 M 指令」上就能核对将要发出去的完整命令。 */
     elPreview.textContent = txt;
-    elBtnSend.title = "将发送：" + txt;
+    elBtnSend.title = (c === null) ? txt : ("将发送：" + c);
+    refreshThirdHint();
   }
+
+  /* 输入框的 min/max/step 跟着「模式 + 单位」走，集中一处改，
+   * 免得切换模式和切换单位两条路径各写一份、慢慢就不一致了。 */
+  function syncThirdConstraints() {
+    const k = unitScale();
+    if (axisMode === "yaw") {
+      elZ.min = -YAW_LIMIT;
+      elZ.max = YAW_LIMIT;
+      elZ.step = "5";
+    } else {
+      elZ.min = (k === 1) ? -1 : -1000;
+      elZ.max = (k === 1) ? 1 : 1000;
+      elZ.step = (k === 1) ? "0.005" : "5";
+    }
+  }
+
+  /* 切模式 = 换一套参数化，目标点本身不动，所以两边的值要互相换算着搬。
+   * 否则从 Z 切到偏航会突然跳到 0°，手一按就跑了。 */
+  function setAxisMode(mode) {
+    if (mode === axisMode) { return; }
+
+    const k = unitScale();
+    const x = parseFloat(elX.value) * k;
+    const v = parseFloat(elZ.value);
+
+    if (mode === "yaw") {
+      /* z（当前单位）→ θ */
+      elZ.value = (isFinite(x) && x > 0 && isFinite(v))
+        ? yawFromXZ(x, v * k).toFixed(1)
+        : "0";
+      elLbThird.textContent = "偏航 θ (°)";
+      elZ.setAttribute("aria-label", "偏航角，单位度，0 度为正前方，范围 ±88 度");
+      elZ.title = "偏航角（度），z 由 x·tan(θ) 换算";
+    } else {
+      /* θ → z（当前单位） */
+      if (isFinite(x) && isFinite(v)) {
+        elZ.value = (zFromYaw(x, v) / k).toFixed(k === 1 ? 3 : 0);
+      }
+      elLbThird.textContent = "Z 横向";
+      elZ.setAttribute("aria-label", "Z 横向坐标");
+      elZ.title = "Z 横向坐标";
+    }
+
+    axisMode = mode;
+    syncThirdConstraints();
+    elBtnAxisZ.classList.toggle("on", mode === "z");
+    elBtnAxisYaw.classList.toggle("on", mode === "yaw");
+    logSys(mode === "yaw"
+      ? "第三个框改为偏航角：发 M 时 z 按 x·tan(θ) 换算"
+      : "第三个框改回 Z 横向坐标");
+    refreshPreview();
+  }
+
+  elBtnAxisZ.addEventListener("click", () => setAxisMode("z"));
+  elBtnAxisYaw.addEventListener("click", () => setAxisMode("yaw"));
 
   function setPill(kind, text) {
     elPill.className = "pill " + kind;
@@ -1569,11 +1711,25 @@
   }
 
   async function sendMove() {
+    const bad = thirdProblem();
+    if (bad !== null) {
+      setPill("err", "参数不合法");
+      logSys(bad);
+      return;
+    }
+
     const cmd = buildCmd();
     if (cmd === null) {
       setPill("err", "坐标必须是数字");
       return;
     }
+
+    /* 偏航模式下这条 M 会改朝向，先把 lastYaw 乐观更新，
+     * 免得紧接着点「+15°」时用的还是 500ms 前的旧角度（同 sendYaw 的理由）。 */
+    if (axisMode === "yaw") {
+      lastYaw = parseFloat(elZ.value);
+    }
+
     errLock = false;                       /* 新指令发出，解除上一次的错误锁 */
     setPill("wait", "已发送，等待受理…");
     await sendText(cmd + "\r\n");
@@ -2091,20 +2247,28 @@
     const dp = elUnit.value === "mm" ? 0 : 3;
     elX.value = (lastTarget.x * k).toFixed(dp);
     elY.value = (lastTarget.y * k).toFixed(dp);
-    elZ.value = (lastTarget.z * k).toFixed(dp);
+    /* 第三个框跟着当前模式走：偏航模式填角度，别再塞一个横向坐标进去 */
+    elZ.value = (axisMode === "yaw")
+      ? yawFromXZ(lastTarget.x, lastTarget.z).toFixed(1)
+      : (lastTarget.z * k).toFixed(dp);
     refreshPreview();
   });
 
   elUnit.addEventListener("change", () => {
-    /* 切换单位时把输入框里的数换算过去，别让人重新输一遍 */
+    /* 切换单位时把输入框里的数换算过去，别让人重新输一遍。
+     * 偏航模式下第三个框是角度，和米/毫米无关，不能跟着换算。 */
     const toMm = elUnit.value === "mm";
-    [elX, elY, elZ].forEach((el) => {
+    const conv = (el) => {
       const v = parseFloat(el.value);
       if (isFinite(v)) {
         el.value = toMm ? (v * 1000).toFixed(0) : (v / 1000).toFixed(3);
       }
       el.step = toMm ? "5" : "0.005";
-    });
+    };
+
+    [elX, elY].forEach(conv);
+    if (axisMode === "z") { conv(elZ); }
+    syncThirdConstraints();
     refreshPreview();
   });
 
@@ -2218,14 +2382,40 @@
 
     const k = unitScale();
     elX.value = (p.x / k).toFixed(k === 1 ? 3 : 0);
-    elZ.value = (p.z / k).toFixed(k === 1 ? 3 : 0);
+
+    /* 偏航模式下第三个框填角度：拿点选方向的 atan2 反算。
+     * 因为 z = x·tanθ 是可逆的，θ 由这个点算出、再换回 z 就是原值 ——
+     * 所以两种模式下点选都落在同一个点，手臂不会因为切了开关而偏。 */
+    let pickYaw = null;
+    if (axisMode === "yaw") {
+      if (p.x <= 0) {
+        logSys("点选落在底座后方（x≤0），偏航模式只覆盖正前方 ±88°，这次按 0° 处理");
+        pickYaw = 0;
+      } else {
+        pickYaw = yawFromXZ(p.x, p.z);
+        const lim = YAW_LIMIT;
+        if (pickYaw > lim) { pickYaw = lim; }
+        if (pickYaw < -lim) { pickYaw = -lim; }
+        if (Math.abs(yawFromXZ(p.x, p.z)) > lim) {
+          logSys("点选方向超出偏航限位 ±" + lim + "°，已夹到限位（点会随之挪一点）");
+        }
+      }
+      elZ.value = pickYaw.toFixed(1);
+    } else {
+      elZ.value = (p.z / k).toFixed(k === 1 ? 3 : 0);
+    }
 
     pickPt = { x: p.x, y: planeY, z: p.z };
     refreshPreview();
     refreshView();
 
-    logSys("点选 → x=" + p.x.toFixed(3) + "  z=" + p.z.toFixed(3) +
-           "（高度沿用 y=" + planeY.toFixed(3) + "）");
+    if (axisMode === "yaw") {
+      logSys("点选 → x=" + p.x.toFixed(3) + "  偏航=" + pickYaw.toFixed(1) + "°" +
+             "（高度沿用 y=" + planeY.toFixed(3) + "；z 由 x·tanθ 还原）");
+    } else {
+      logSys("点选 → x=" + p.x.toFixed(3) + "  z=" + p.z.toFixed(3) +
+             "（高度沿用 y=" + planeY.toFixed(3) + "）");
+    }
 
     if (e.shiftKey) {
       if (connected) { sendMove(); }

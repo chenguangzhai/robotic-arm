@@ -146,7 +146,7 @@ openocd -f interface/stlink.cfg -f target/stm32f1x.cfg -c "program build/Debug/O
 `M -0.28 0.10 0` 会回 `ERR:OUT`，`G` / `R` / `Y` / `T` / `L` / `P` / `X` / `C` / `W`
 都按固件语义生效。自查脚本：`python tools/_cdp_demo_test.py`。
 
-- 左栏：坐标输入 / 单位切换、偏航、夹爪、实时状态、示教点面板
+- 左栏：坐标输入（第三个框可切 Z 横向 / 偏航角，偏航角按 `z = x·tanθ` 换算）/ 单位切换、偏航、夹爪、实时状态、示教点面板
 - 中栏：姿态视图，2D 侧视剖面 + 工作空间底图，或 3D 立体视图（可切换）
 - 右栏：串口日志，RX/TX 分色、毫秒时间戳、HEX 模式
 
